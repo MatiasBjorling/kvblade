@@ -38,7 +38,7 @@ install: default
 	mkdir -p $(INSTDIR)
 	install -m 644 "$(PWD)"/kvblade.ko $(INSTDIR)
 	/sbin/depmod -a
-	@echo "Installing sysfs interface commands in $(UINSTDIR)"
+	@echo "Installing sysfs interface commands in $(SBINDIR)"
 	mkdir -p $(SBINDIR)
 	@for f in $(CMDS) ; do \
 		sh -xc "install -m 700 $$f ${SBINDIR}/$$f" || break; \

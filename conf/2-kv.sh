@@ -1,4 +1,4 @@
-echo 'obj-$(CONFIG_ATA_OVER_ETH)	+= 7.o' > conf/Makefile
+echo 'obj-$(CONFIG_KVBLADE)	+= 2.o' > conf/Makefile
 if $make_cmd 2>&1 1> /dev/null \
 	  | grep 'too many arguments to function.*skb_linearize' > /dev/null 2>&1; then
 	echo new
