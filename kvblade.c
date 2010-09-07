@@ -31,8 +31,6 @@ static void vrelease(struct kobject *);
 enum {
 	ATA_MODEL_LEN =	40,
 	ATA_LBA28MAX = 0x0fffffff,
-	ATA_IDNF = 1<<4,
-	ATA_UNC = 1<<6,
 
 	Aadd = 0,
 	Adel,
@@ -341,11 +339,11 @@ show(struct kobject *kobj, struct attribute *attr, char *data)
 	case Abdev:
 		return print_dev_t(data, d->blkdev->bd_dev);
 	case Abpath:
-		return sprintf(data, "%.*s\n", nelem(d->path), d->path);
+		return sprintf(data, "%.*s\n", (int) nelem(d->path), d->path);
 	case Amodel:
-		return sprintf(data, "%.*s\n", nelem(d->model), d->model);
+		return sprintf(data, "%.*s\n", (int) nelem(d->model), d->model);
 	case Asn:
-		return sprintf(data, "%.*s\n", nelem(d->sn), d->sn);
+		return sprintf(data, "%.*s\n", (int) nelem(d->sn), d->sn);
 	}
 }
 
@@ -788,7 +786,7 @@ static struct packet_type pt = {
 };
 
 static int __init
-init(void)
+initm(void)
 {
 	skb_queue_head_init(&skb_outq);
 	skb_queue_head_init(&skb_inq);
@@ -806,7 +804,7 @@ init(void)
 }
 
 static void
-exit(void)
+exitm(void)
 {
 	struct aoedev *d, *nd;
 
@@ -829,8 +827,8 @@ exit(void)
 	kobject_unregister(&kobj);
 }
 
-module_init(init);
-module_exit(exit);
+module_init(initm);
+module_exit(exitm);
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Sam Hopkins <sah@coraid.com>");

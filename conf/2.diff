@@ -1,6 +1,6 @@
---- a/kvblade.c	2006-08-22 17:25:00.000000000 -0400
-+++ b/kvblade.c	2006-08-22 17:25:08.000000000 -0400
-@@ -695,8 +695,7 @@ rcv(struct sk_buff *skb, struct net_devi
+--- a/kvblade.c	2006-09-22 15:17:19.000000000 -0400
++++ b/kvblade.c	2006-09-22 15:16:33.000000000 -0400
+@@ -693,8 +693,7 @@ rcv(struct sk_buff *skb, struct net_devi
  		dprintk("share check returned nil\n");
  		return -ENOMEM;
  	}

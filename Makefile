@@ -50,6 +50,12 @@ uninstall:
 	/sbin/depmod -a
 	@echo "Removing sysfs interface commands from $(SBINDIR)"
 	@for f in $(CMDS) ; do \
-		rm -f ${SBINDIR}/$f \
+		rm -f ${SBINDIR}/$$f ; \
 	done
+
+release: clean
+	@for f in conf/*.diff; do \
+		patch -p1 -N --no-backup-if-mismatch -r /dev/null <$$f ;\
+	done || true
+	@sed /^$$/q NEWS
 

@@ -1,4 +1,12 @@
 -*- change-log -*-
+2006-10-02 Sam Hopkins <sah@coraid.com>
+	Fix Makefile uninstall target
+	Cast field precision arguments to int
+	use less general initm/exitm
+	Add Makefile release target
+	Add compatibility patch for 2.6.18 declaration of ATA_UNC,ATA_IDNF
+	release kvblade-alpha-3
+
 2006-08-23 "Sam" Hopkins <sah@coraid.com>
 	Fix Makefile echo "... installing in "
 	Fix compatibility scripts

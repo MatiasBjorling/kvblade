@@ -1,6 +1,6 @@
---- a/kvblade.c 2006-08-22 17:20:15.000000000 -0400
-+++ b/kvblade.c	2006-08-22 17:21:50.000000000 -0400
-@@ -686,7 +686,7 @@ make_response(struct sk_buff *skb, int m
+--- a/kvblade.c	2006-09-22 15:23:17.000000000 -0400
++++ b/kvblade.c	2006-09-22 15:23:15.000000000 -0400
+@@ -684,7 +684,7 @@ make_response(struct sk_buff *skb, int m
  }
  
  static int
