@@ -1,0 +1,15 @@
+#!/bin/sh
+
+if [ ! -d /sys/kvblade ]; then
+	echo 2>&1 missing /sys/kvblade
+	exit 1
+fi
+
+if [ $# -ne 3 ]; then
+	echo 2>&1 usage: $0 major minor ifname
+	exit 1
+fi
+
+echo $* >/sys/kvblade/del && exit 0
+echo 1>&2 unsuccessful.  see syslog for explanation.
+

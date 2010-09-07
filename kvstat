@@ -1,0 +1,25 @@
+#!/bin/sh
+
+set -e
+format="%10s %6s %10s %-14s\n"
+if [ ! -d /sys/kvblade ]; then
+	echo 1>&2 missing /sys/kvblade
+	exit 1
+fi
+
+for d in `ls -d /sys/kvblade/* | grep '[0-9]*\.[0-9]*@'`; do
+	test $d = end && continue
+
+	dev=`basename "$d" | awk -F@ '{print $1}'`
+	netif=`basename "$d" | awk -F@ '{print $2}'`
+	bpath="`cat \"$d/bpath\"`"
+	sectors="`cat \"$d/scnt\"`"
+	psize=`echo "(512000 * $sectors) / (1000 * 1000 * 1000)" | bc`
+	psize=`printf "%04d\n" $psize | sed 's!\(...\)$!.\1!'`
+	printf "$format" \
+		"$dev" \
+		"$netif" \
+		"${psize}GB" \
+		"$bpath"
+done | sort
+

@@ -1,0 +1,41 @@
+
+kvblade: a 2.6 linux kernel module
+---
+
+Kvblade is a kernel module implementing the target
+side of the AoE protocol.  Users can command the
+module through sysfs to export block devices on
+specified network interfaces.  The loopback device
+should be used as an intermediary for exporting
+regular files with kvblade.
+
+An exported target has a tuple that uniquely defines
+it:
+	{ major, minor, netif }
+
+Major is the aoemajor / shelf address, minor is the
+aoeminor / slot address, and netif is the name of
+the interface the target is bound on.  It is illegal
+to attempt to create more than one of these in kvblade.
+
+Three shell scripts have been created to facilitate interfacing
+with kvblade through sysfs: kvstat, kvadd, and kvdel.  Kvstat
+prints the list of currently exported vblades.  Kvadd and
+kvdel are used to manage the exported vblades.
+
+This is alpha code.  It appears stable, but has limitations
+that need to be addressed.  See the TODO file for a list of
+things that you can help with.
+
+Author:
+	Sam Hopkins
+	Coraid, Inc.
+
+Address support requests to
+aoetools-discuss@lists.sourceforge.net.
+
+Thanks to Lelik P. Korchagin for writing the first
+kernel vblade module.  It was quite helpful as a
+reference implementation.
+
+

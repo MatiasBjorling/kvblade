@@ -1,0 +1,12 @@
+--- a/kvblade.c	2006-08-22 17:25:00.000000000 -0400
++++ b/kvblade.c	2006-08-22 17:25:08.000000000 -0400
+@@ -695,8 +695,7 @@ rcv(struct sk_buff *skb, struct net_devi
+ 		dprintk("share check returned nil\n");
+ 		return -ENOMEM;
+ 	}
+-	if (skb_is_nonlinear(skb))
+-	if (skb_linearize(skb, GFP_ATOMIC) < 0) {
++	if (skb_linearize(skb) < 0) {
+ 		dev_kfree_skb(skb);
+ 		return -ENOMEM;
+ 	}

@@ -1,0 +1,34 @@
+
+Here is a list of things that need to be addressed.
+
+* Export a block device on multiple interfaces, with
+the same major/minor and with different major/minor.
+
+This probably works, but needs to be tested.
+
+* Root the kvblade sysfs tree in /sys/modules/kvblade.
+
+This is just for cleanliness.  The solution must not
+break the simplicity with which the driver currently
+uses attributes.  I'd like to see the fix be as simple
+as having kobj.parent point to the right place.
+
+* Support jumbo frames.
+
+Much of the aoe support code is there, but the interface
+to the block device needs to be worked out.  I highly
+expect a jumbo frame test to provide "interesting" results.
+
+* Solve speed problems when using real block devices.
+
+Access to real block devices is slow.  Throughput to
+loopback devices on a file in a filesystem is 
+decent, leading me to believe there's some limitation
+that caching would solve.  It could be that we're effectively
+only processing one request at a time.  On a real
+block device that's 1K reads/writes (sans jumbo) that
+must go to disk before responding.  Or, it could simply
+be that 1K I/O even with 16 outstanding is slow.
+
+
+

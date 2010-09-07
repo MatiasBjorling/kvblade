@@ -1,0 +1,21 @@
+This directory contains files to help the build system adjust to a
+particular kernel.  For consistency the patches here to change "old to
+new".
+
+Each compatibility issue handles a change where there is an old and a
+new way of doing things.
+
+Description of files:
+
+  N.txt	      A description of the compatibility issue.
+
+  N-av.sh     A script that says whether the aoe sources are old or
+	      new style.
+
+  N-kv.sh     A script that says whether the kernel sources are old or
+	      new style.
+
+  N.c	      A minimal C file that is used by N-kv.sh.
+
+  N.diff      A patch that will change old-style aoe sources to new
+	      style.

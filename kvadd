@@ -1,0 +1,15 @@
+#!/bin/sh
+
+if [ $# -ne 4 ]; then
+	echo 1>&2 usage: $0 major minor ifname bpath
+	exit 1
+fi
+
+if [ ! -d /sys/kvblade ]; then
+	echo 2>&1 missing /sys/kvblade
+	exit 1
+fi
+
+echo $* >/sys/kvblade/add && exit 0
+echo 1>&2 unsuccessful.  see syslog for explanation.
+
