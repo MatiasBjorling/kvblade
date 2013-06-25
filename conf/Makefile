@@ -1,1 +1,1 @@
-obj-$(CONFIG_KVBLADE)	+= 3.o
+obj-$(CONFIG_KVBLADE)	+= 1.o

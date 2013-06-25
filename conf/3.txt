@@ -1,5 +1,0 @@
-ATA_IDNF and ATA_UNC are declared in the linux 2.6.18 
-kernel headers and do not need to be declared by us.
-
-Thanks to Adam J. Richter for reporting.
-
