@@ -1,6 +1,5 @@
 /* Copyright (C) 2006 Coraid, Inc.  See COPYING for GPL terms. */
 
-#include <linux/config.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/moduleparam.h>
@@ -24,37 +23,27 @@
 #define nelem(A) (sizeof (A) / sizeof (A)[0])
 #define MAXSECTORS(mtu) (((mtu) - sizeof (struct aoe_hdr) - sizeof (struct aoe_atahdr)) / 512)
 
-static ssize_t show(struct kobject *, struct attribute *, char *);
-static ssize_t store(struct kobject *, struct attribute *, const char *, size_t);
-static void vrelease(struct kobject *);
+static struct kobject kvblade_kobj;
 
 enum {
 	ATA_MODEL_LEN =	40,
 	ATA_LBA28MAX = 0x0fffffff,
-
-	Aadd = 0,
-	Adel,
-	Ascnt,
-	Abdev,
-	Abpath,
-	Amodel,
-	Asn,
 };
 
 struct aoedev;
 struct aoereq {
 	struct bio *bio;
-        struct sk_buff *skb;
+	struct sk_buff *skb;
 	struct aoedev *d;	/* blech.  I'm blind to a cleaner solution. */
 };
 
 struct aoedev {
-        struct kobject kobj;
+	struct kobject kobj;
 	struct aoedev *next;
 	struct net_device *netdev;
 	struct block_device *blkdev;
 	struct aoereq reqs[16];
-        atomic_t busy;
+	atomic_t busy;
 	unsigned char config[1024];
 	int nconfig;
 	int major;
@@ -63,53 +52,13 @@ struct aoedev {
 	char path[256];
 	loff_t scnt;
 	char model[ATA_MODEL_LEN];
-	char sn[ATA_SERNO_LEN];
+	char sn[ATA_ID_SERNO_LEN];
 };
 
-static struct attribute attrs[] = {
-	[Aadd] = { .name = "add", .mode = S_IWUGO, .owner = THIS_MODULE }, 
-	[Adel] = { .name = "del", .mode = S_IWUGO, .owner = THIS_MODULE },
-	[Ascnt] = { .name = "scnt", .mode = S_IRUGO, .owner = THIS_MODULE },
-	[Abdev] = { .name = "bdev", .mode = S_IRUGO, .owner = THIS_MODULE },
-	[Abpath] = { .name = "bpath", .mode = S_IRUGO, .owner = THIS_MODULE },
-	[Amodel] = { .name = "model", .mode = S_IRUGO|S_IWUGO, .owner = THIS_MODULE },
-	[Asn] = { .name = "sn", .mode = S_IRUGO|S_IWUGO, .owner = THIS_MODULE },
-};
-
-static struct attribute *top_attrs[] = {
-	attrs + Aadd,
-	attrs + Adel,
-	NULL
-};
-
-static struct attribute *vblade_attrs[] = {
-	attrs + Ascnt,
-	attrs + Abdev,
-	attrs + Abpath,
-	attrs + Amodel,
-	attrs + Asn,
-	NULL
-};
-
-static struct sysfs_ops ops = {
-	.store = store,
-	.show = show,
-};
-
-static struct kobj_type ktype = {
-	.default_attrs = top_attrs,
-	.sysfs_ops = &ops,
-};
-
-static struct kobject kobj = {
-	.name = "kvblade",
-	.ktype = &ktype,
-};
-
-static struct kobj_type vktype = {
-	.release = vrelease,
-	.default_attrs = vblade_attrs,
-	.sysfs_ops = &ops,
+struct kvblade_sysfs_entry {
+	struct attribute attr;
+	ssize_t (*show)(struct aoedev *, char *);
+	ssize_t (*store)(struct aoedev *, const char *, size_t);
 };
 
 static struct sk_buff_head skb_outq, skb_inq;
@@ -119,8 +68,36 @@ static struct completion ktrendez;
 static struct task_struct *task;
 static wait_queue_head_t ktwaitq;
 
-static struct sk_buff *
-skb_new(struct net_device *dev, ulong len)
+static struct kobj_type kvblade_ktype;
+
+static void kvblade_release(struct kobject *kobj)
+{
+}
+
+static ssize_t kvblade_sysfs_args(char *p, char *argv[], int argv_max)
+{
+	int argc = 0;
+
+	while (*p) {
+		while (*p && isspace(*p))
+			++p;
+		if (*p == '\0')
+			break;
+		if (argc < argv_max)
+			argv[argc++] = p;
+		else {
+			printk(KERN_ERR "too many args!\n");
+			return -1;
+		}
+		while (*p && !isspace(*p))
+			++p;
+		if (*p)
+			*p++ = '\0';
+	}
+	return argc;
+}
+
+static struct sk_buff * skb_new(struct net_device *dev, ulong len) 
 {
 	struct sk_buff *skb;
 
@@ -130,7 +107,9 @@ skb_new(struct net_device *dev, ulong len)
 	skb = alloc_skb(len, GFP_ATOMIC);
 	if (skb) {
 		memset(skb->data, 0, len);
-		skb->nh.raw = skb->mac.raw = skb->data;
+
+		skb_reset_network_header(skb);
+		skb_reset_mac_header(skb);
 		skb->dev = dev;
 		skb->protocol = __constant_htons(ETH_P_AOE);
 		skb->priority = 0;
@@ -141,8 +120,21 @@ skb_new(struct net_device *dev, ulong len)
 	return skb;
 }
 
-static void
-announce(struct aoedev *d)
+static char* spncpy(char *d, const char *s, int n)
+{
+	char *r = d;
+
+	memset(d, ' ', n);
+	while (n-- > 0) {
+		if (*s == '\0')
+			break;
+		*d++ = *s++;
+	}
+	return r;
+}
+
+
+static void kvblade_announce(struct aoedev *d)
 {
 	struct sk_buff *skb;
 	struct aoe_hdr *aoe;
@@ -153,12 +145,13 @@ announce(struct aoedev *d)
 	if (skb == NULL)
 		return;
 
-	aoe = (struct aoe_hdr *) skb->mac.raw;
+	aoe = (struct aoe_hdr *) skb_mac_header(skb);
 	cfg = (struct aoe_cfghdr *) aoe->data;
 
 	memset(aoe, 0, sizeof *aoe);
 	memcpy(aoe->src, d->netdev->dev_addr, ETH_ALEN);
 	memset(aoe->dst, 0xFF, ETH_ALEN);
+
 	aoe->type = __constant_htons(ETH_P_AOE);
 	aoe->verfl = AOE_HVER | AOEFL_RSP;
 	aoe->major = cpu_to_be16(d->major);
@@ -179,232 +172,292 @@ announce(struct aoedev *d)
 	wake_up(&ktwaitq);
 }
 
-static char *
-spncpy(char *d, const char *s, int n)
-{
-	char *r = d;
 
-	memset(d, ' ', n);
-	while (n-- > 0) {
-		if (*s == '\0')
-			break;
-		*d++ = *s++;
-	}
-	return r;
-}
-
-static ssize_t
-add(u32 major, u32 minor, char *ifname, char *path)
+static ssize_t kvblade_add(u32 major, u32 minor, char *ifname, char *path)
 {
-	struct block_device *bd;
 	struct net_device *nd;
-        struct aoedev *d, *td;
+	struct block_device *bd;
+	struct aoedev *d, *td;
+	int ret = 0;
 
-	bd = NULL;
-	d = NULL;
-	nd = dev_get_by_name(ifname);
+	printk("kvblade_add\n");
+	nd = dev_get_by_name(&init_net, ifname);
 	if (nd == NULL) {
 		eprintk("add failed: interface %s not found.\n", ifname);
 		return -ENOENT;
 	}
 	dev_put(nd);
 
-	bd = open_bdev_excl(path, 0, NULL); //THIS_MODULE);
+	bd = blkdev_get_by_path(path, FMODE_READ|FMODE_WRITE, NULL);
 	if (!bd || IS_ERR(bd)) {
-		eprintk("add failed: can't open block device %s: %ld\n", path, PTR_ERR(bd));
+		printk(KERN_ERR "add failed: can't open block device %s: %ld\n", path, PTR_ERR(bd));
 		return -ENOENT;
 	}
-	if (bd->bd_disk->capacity == 0) {
-		eprintk("add failed: zero sized block device.\n");
-		close_bdev_excl(bd);
-		return -ENOENT;
-	}
-	d = kmalloc(sizeof *d, GFP_KERNEL);
-	if (!d) {
-		eprintk("add failed: kmalloc error for %d.%d\n", major, minor);
-		close_bdev_excl(bd);
-		return -ENOMEM;
+
+	if (get_capacity(bd->bd_disk) == 0) {
+		printk(KERN_ERR "add failed: zero sized block device.\n");
+		ret = -ENOENT;
+		goto err;
 	}
 
 	spin_lock(&lock);
-	for (td=devlist; td; td=td->next)
-		if (td->major == major)
-		if (td->minor == minor)
-		if (td->netdev == nd) {
+	
+	for (td = devlist; td; td = td->next)
+		if (td->major == major &&
+			td->minor == minor &&
+			td->netdev == nd) {
+
 			spin_unlock(&lock);
-			close_bdev_excl(bd);
-			kfree(d);
-			eprintk("add failed: device %d.%d already exists on %s.\n",
+
+			printk(KERN_ERR "add failed: device %d.%d already exists on %s.\n",
 				major, minor, ifname);
-			return -EEXIST;
+
+			ret = -EEXIST;
+			goto err;
 		}
-        memset(d, 0, sizeof *d);
-        atomic_set(&d->busy, 0);
+	
+	d = kmalloc(sizeof(struct aoedev), GFP_KERNEL);
+	if (!d) {
+		printk(KERN_ERR "add failed: kmalloc error for %d.%d\n", major, minor);
+		ret = -ENOMEM;
+		goto err;
+	}
+
+	memset(d, 0, sizeof(struct aoedev));
+	atomic_set(&d->busy, 0);
 	d->blkdev = bd;
 	d->netdev = nd;
 	d->major = major;
 	d->minor = minor;
-        d->scnt = bd->bd_disk->capacity;
+	d->scnt = get_capacity(bd->bd_disk);
 	strncpy(d->path, path, nelem(d->path)-1);
 	spncpy(d->model, "EtherDrive(R) kvblade", nelem(d->model));
 	spncpy(d->sn, "SN HERE", nelem(d->sn));
-	kobject_init(&d->kobj);
-	d->kobj.ktype = &vktype;
-	d->kobj.parent = &kobj;
-	kobject_set_name(&d->kobj, "%d.%d@%s", major, minor, ifname);
+	
+	kobject_init_and_add(&d->kobj, &kvblade_ktype, &kvblade_kobj, "%d.%d@%s", major, minor, ifname);
+
 	d->next = devlist;
 	devlist = d;
 	spin_unlock(&lock);
-	kobject_add(&d->kobj);
 
 	dprintk("added %s as %d.%d@%s: %Lu sectors.\n",
 		path, major, minor, ifname, d->scnt);
-	announce(d);
+	kvblade_announce(d);
 	return 0;
+err:
+	blkdev_put(bd, FMODE_READ|FMODE_WRITE);
+	return ret;
 }
 
-static ssize_t
-del(u32 major, u32 minor, char *ifname)
+static ssize_t kvblade_del(u32 major, u32 minor, char *ifname)
 {
-        struct aoedev *d, **b;
-	int error;
+	struct aoedev *d, **b;
+	int ret;
 
 	b = &devlist;
 	d = devlist;
 	spin_lock(&lock);
-	for (; d; b=&d->next, d=*b)
-		if (d->major == major)
-		if (d->minor == minor)
-		if (strcmp(d->netdev->name, ifname) == 0)
+	
+	for (; d; b = &d->next, d = *b)
+		if (d->major == major &&
+			d->minor == minor &&
+			strcmp(d->netdev->name, ifname) == 0)
 			break;
+
 	if (d == NULL) {
-		eprintk("del failed: device %d.%d@%s not found.\n", 
+		printk(KERN_ERR "del failed: device %d.%d@%s not found.\n", 
 			major, minor, ifname);
-		error = -ENOENT;
-		goto exit;
+		ret = -ENOENT;
+		goto err;
 	} else if (atomic_read(&d->busy)) {
-		eprintk("del failed: device %d.%d@%s is busy.\n",
+		printk(KERN_ERR "del failed: device %d.%d@%s is busy.\n",
 			major, minor, ifname);
-		error = -EBUSY;
-		goto exit;
+		ret = -EBUSY;
+		goto err;
 	}
+
 	*b = d->next;
+	
 	spin_unlock(&lock);
-	close_bdev_excl(d->blkdev);
+	
+	blkdev_put(d->blkdev, FMODE_READ|FMODE_WRITE);
+	
 	kobject_del(&d->kobj);
 	kobject_put(&d->kobj);
+	
 	return 0;
-exit:
+err:
 	spin_unlock(&lock);
-	return error;
+	return ret;
 }
 
-static ssize_t
-args(char *p, char *argv[], int argv_max)
+
+static ssize_t store_add(struct aoedev *dev, const char *page, size_t len)
 {
-	int argc = 0;
-
-	while (*p) {
-		while (*p && isspace(*p))
-			++p;
-		if (*p == '\0')
-			break;
-		if (argc < argv_max)
-			argv[argc++] = p;
-		else {
-			eprintk("too many args!\n");
-			return -1;
-		}
-		while (*p && !isspace(*p))
-			++p;
-		if (*p)
-			*p++ = '\0';
-	}
-	return argc;
-}
-
-static ssize_t
-show(struct kobject *kobj, struct attribute *attr, char *data)
-{
-	struct aoedev *d;
-
-	d = (struct aoedev *) kobj;
-	switch (attr - attrs) {
-	default:
-	case Aadd:
-	case Adel:
-		return 0;
-	case Ascnt:
-		return sprintf(data, "%Ld\n", d->scnt);
-	case Abdev:
-		return print_dev_t(data, d->blkdev->bd_dev);
-	case Abpath:
-		return sprintf(data, "%.*s\n", (int) nelem(d->path), d->path);
-	case Amodel:
-		return sprintf(data, "%.*s\n", (int) nelem(d->model), d->model);
-	case Asn:
-		return sprintf(data, "%.*s\n", (int) nelem(d->sn), d->sn);
-	}
-}
-
-static ssize_t
-store(struct kobject *kobj, struct attribute *attr, const char *data, size_t len)
-{
-	struct aoedev *d;
+	int error = 0;
 	char *argv[16];
 	char *p;
-	int error;
 
-	error = 0;
 	p = kmalloc(len+1, GFP_KERNEL);
-	memcpy(p, data, len);
+	memcpy(p, page, len);
 	p[len] = '\0';
-	d = (struct aoedev *) kobj;
+	
+	if (kvblade_sysfs_args(p, argv, nelem(argv)) != 4) {
+		printk(KERN_ERR "bad arg count for add\n");
+		error = -EINVAL;
+	} else
+		error = kvblade_add(simple_strtoul(argv[0], NULL, 0),
+			simple_strtoul(argv[1], NULL, 0),
+			argv[2], argv[3]);
 
-	switch (attr - attrs) {
-	default:
-	case Ascnt:
-	case Abdev:
-	case Abpath:
-		error = -EPERM;
-		break;
-	case Aadd:
-		if (args(p, argv, nelem(argv)) != 4) {
-			eprintk("bad arg count for add\n");
-			error = -EINVAL;
-		} else
-			error = add(simple_strtoul(argv[0], NULL, 0),
-				simple_strtoul(argv[1], NULL, 0),
-				argv[2], argv[3]);
-		break;
-	case Adel:
-		if (args(p, argv, nelem(argv)) != 3) {
-			eprintk("bad arg count for del\n");
-			error = -EINVAL;
-		} else
-			error = del(simple_strtoul(argv[0], NULL, 0),
-				simple_strtoul(argv[1], NULL, 0),
-				argv[2]);
-		break;
-	case Amodel:
-		spncpy(d->model, data, nelem(d->model));
-		break;
-	case Asn:
-		spncpy(d->sn, data, nelem(d->sn));
-		break;
-	}
 	kfree(p);
 	return error ? error : len;
 }
 
-static void
-vrelease(struct kobject *kobj)
+
+static struct kvblade_sysfs_entry kvblade_sysfs_add = __ATTR(add, 0644, NULL, store_add);
+
+static ssize_t store_del(struct aoedev *dev, const char *page, size_t len)
 {
-	kfree(kobj);
+	int error = 0;
+	char *argv[16];
+	char *p;
+
+	p = kmalloc(len+1, GFP_KERNEL);
+	memcpy(p, page, len);
+	p[len] = '\0';
+
+	if (kvblade_sysfs_args(p, argv, nelem(argv)) != 3) {
+		printk(KERN_ERR "bad arg count for del\n");
+		error = -EINVAL;
+	} else
+		error = kvblade_del(simple_strtoul(argv[0], NULL, 0),
+			simple_strtoul(argv[1], NULL, 0),
+			argv[2]);
+
+	kfree(p);
+	return error ? error : len;
 }
 
-static void
-setfld(u16 *a, int idx, int len, char *str)
+static struct kvblade_sysfs_entry kvblade_sysfs_del = __ATTR(del, 0644, NULL, store_del);
+
+static ssize_t show_scnt(struct aoedev *dev, char *page)
+{
+	return sprintf(page, "%Ld\n", dev->scnt);
+}
+
+static struct kvblade_sysfs_entry kvblade_sysfs_scnt = __ATTR(scst, 0644, show_scnt, NULL);
+
+static ssize_t show_bdev(struct aoedev *dev, char *page)
+{
+	return print_dev_t(page, dev->blkdev->bd_dev);
+}
+
+static struct kvblade_sysfs_entry kvblade_sysfs_bdev = __ATTR(bdev, 0644, show_bdev, NULL);
+
+static ssize_t show_bpath(struct aoedev *dev, char *page)
+{
+	return sprintf(page, "%.*s\n", (int) nelem(dev->path), dev->path);
+}
+
+static struct kvblade_sysfs_entry kvblade_sysfs_bpath = __ATTR(bpath, 0644, show_bpath, NULL);
+
+static ssize_t show_model(struct aoedev *dev, char *page)
+{
+	return sprintf(page, "%.*s\n", (int) nelem(dev->model), dev->model);
+}
+
+static ssize_t store_model(struct aoedev *dev, const char *page, size_t len)
+{
+	spncpy(dev->model, page, nelem(dev->model));
+	return 0;
+}
+
+static struct kvblade_sysfs_entry kvblade_sysfs_model = __ATTR(model, 0644, show_model, store_model);
+
+static ssize_t show_sn(struct aoedev *dev, char *page)
+{
+	return sprintf(page, "%.*s\n", (int) nelem(dev->sn), dev->sn);
+}
+
+static ssize_t store_sn(struct aoedev *dev, const char *page, size_t len)
+{
+	spncpy(dev->sn, page, nelem(dev->sn));
+	return 0; 
+}
+
+static struct kvblade_sysfs_entry kvblade_sysfs_sn = __ATTR(sn, 0644, show_sn, store_sn);
+
+static struct attribute *kvblade_ktype_attrs[] = {
+	&kvblade_sysfs_scnt.attr,
+	&kvblade_sysfs_bdev.attr,
+	&kvblade_sysfs_bpath.attr,
+	&kvblade_sysfs_model.attr,
+	&kvblade_sysfs_sn.attr,
+	NULL,
+};
+
+static struct attribute *kvblade_ktype_ops_attrs[] = {
+	&kvblade_sysfs_add.attr,
+	&kvblade_sysfs_del.attr,
+	NULL,
+};
+
+static ssize_t kvblade_attr_show(struct kobject *kobj, struct attribute *attr, char *page)
+{
+	struct kvblade_sysfs_entry *entry;
+	struct aoedev *dev;
+
+	entry = container_of(attr, struct kvblade_sysfs_entry, attr);
+	dev = container_of(kobj, struct aoedev, kobj);
+
+	if (!entry->show)
+		return -EIO;
+
+	return entry->show(dev, page);
+}
+
+static ssize_t kvblade_attr_store(struct kobject *kobj, struct attribute *attr,
+			const char *page, size_t length)
+{
+	ssize_t ret;
+	struct kvblade_sysfs_entry *entry;
+
+	entry = container_of(attr, struct kvblade_sysfs_entry, attr);
+
+	if (kobj == &kvblade_kobj)
+		ret = entry->store(NULL, page, length);
+	else {
+		struct aoedev *dev = container_of(kobj, struct aoedev, kobj);
+
+		if (!entry->store)
+			return -EIO;
+
+		ret = entry->store(dev, page, length);
+	}
+
+	return ret;
+}
+
+static const struct sysfs_ops kvblade_sysfs_ops = {
+	.show		= kvblade_attr_show,
+	.store		= kvblade_attr_store,
+};
+
+static struct kobj_type kvblade_ktype = {
+	.default_attrs	= kvblade_ktype_attrs,
+	.sysfs_ops		= &kvblade_sysfs_ops,
+	.release		= kvblade_release,
+};
+
+static struct kobj_type kvblade_ktype_ops = {
+	.default_attrs	= kvblade_ktype_ops_attrs,
+	.sysfs_ops		= &kvblade_sysfs_ops,
+	.release		= kvblade_release,
+};
+
+
+static void setfld(u16 *a, int idx, int len, char *str)
 {
 	u8 *p;
 
@@ -414,8 +467,7 @@ setfld(u16 *a, int idx, int len, char *str)
 	}
 }
 
-static int
-ata_identify(struct aoedev *d, struct aoe_atahdr *ata)
+static int ata_identify(struct aoedev *d, struct aoe_atahdr *ata)
 {
 	char 	buf[64];
 	u16     *words  = (u16 *)ata->data;
@@ -460,8 +512,7 @@ ata_identify(struct aoedev *d, struct aoe_atahdr *ata)
 	return 512;
 }
 
-static int
-ata_io_complete(struct bio *bio, unsigned int bytes, int error)
+static void ata_io_complete(struct bio *bio, int error)
 {
 	struct aoereq *rq;
 	struct aoedev *d;
@@ -469,40 +520,43 @@ ata_io_complete(struct bio *bio, unsigned int bytes, int error)
 	struct aoe_hdr *aoe;
 	struct aoe_atahdr *ata;
 	int len;
+	unsigned int bytes = 0;
 
 	if (!error)
-	if (bio->bi_size)
-		return 1;
+		bytes = bio->bi_io_vec[0].bv_len;
 
 	rq = bio->bi_private;
 	d = rq->d;
 	skb = rq->skb;
-	aoe = (struct aoe_hdr *) skb->mac.raw;
+
+	aoe = (struct aoe_hdr *) skb_mac_header(skb);
 	ata = (struct aoe_atahdr *) aoe->data;
+
 	len = sizeof *aoe + sizeof *ata;
 	if (bio_flagged(bio, BIO_UPTODATE)) {
-		if (bio_rw(bio) == READ)
+		if (bio_data_dir(bio) == READ)
 			len += bytes;
 		ata->scnt = 0;
 		ata->cmdstat = ATA_DRDY;
 		ata->errfeat = 0;
 		// should increment lba here, too
 	} else {
-		eprintk("I/O error %d on %s\n", error, d->kobj.name);
+		printk(KERN_ERR "I/O error %d on %s\n", error, d->kobj.name);
 		ata->cmdstat = ATA_ERR | ATA_DF;
 		ata->errfeat = ATA_UNC | ATA_ABORTED;
 	}
+
 	bio_put(bio);
 	rq->skb = NULL;
 	atomic_dec(&d->busy);
+
 	skb_trim(skb, len);
 	skb_queue_tail(&skb_outq, skb);
+
 	wake_up(&ktwaitq);
-	return 0;
 }
 
-static inline loff_t
-readlba(u8 *lba)
+static inline loff_t readlba(u8 *lba)
 {
 	loff_t n = 0ULL;
 	int i;
@@ -514,8 +568,7 @@ readlba(u8 *lba)
 	return n;
 }
 
-static struct sk_buff *
-ata(struct aoedev *d, struct sk_buff *skb)
+static struct sk_buff * ata(struct aoedev *d, struct sk_buff *skb)
 {
 	struct aoe_hdr *aoe;
 	struct aoe_atahdr *ata;
@@ -526,7 +579,7 @@ ata(struct aoedev *d, struct sk_buff *skb)
 	struct page *page;
 	ulong bcnt, offset;
 
-	aoe = (struct aoe_hdr *) skb->mac.raw;
+	aoe = (struct aoe_hdr *) skb_mac_header(skb);
 	ata = (struct aoe_atahdr *) aoe->data;
 	lba = readlba(ata->lba);
 	len = sizeof *aoe + sizeof *ata;
@@ -545,8 +598,8 @@ ata(struct aoedev *d, struct sk_buff *skb)
 		rw = WRITE;
 	} while (0);
 		if ((lba + ata->scnt) > d->scnt) {
-			eprintk("sector I/O is out of range: %Lu (%d), max %Lu\n",
-				lba, ata->scnt, d->scnt);
+			printk(KERN_ERR "sector I/O is out of range: %Lu (%d), max %Lu\n",
+				(long long) lba, ata->scnt, d->scnt);
 			ata->cmdstat = ATA_ERR;
 			ata->errfeat = ATA_IDNF;
 			break;
@@ -566,24 +619,28 @@ ata(struct aoedev *d, struct sk_buff *skb)
 		}
 		rq->bio = bio;
 		rq->d = d;
+
 		bio->bi_sector = lba;
 		bio->bi_bdev = d->blkdev;
 		bio->bi_end_io = ata_io_complete;
 		bio->bi_private = rq;
+
 		page = virt_to_page(ata->data);
 		bcnt = ata->scnt << 9;
 		offset = offset_in_page(ata->data);
+
 		if (bio_add_page(bio, page, bcnt, offset) < bcnt) {
-			eprintk("can't bio_add_page for %d sectors\n", ata->scnt);
+			printk(KERN_ERR "Can't bio_add_page for %d sectors\n", ata->scnt);
 			bio_put(bio);
 			goto drop;
 		}
+
 		rq->skb = skb;
 		atomic_inc(&d->busy);
 		submit_bio(rw, bio);
 		return NULL;
 	default:
-		eprintk("unknown ATA command 0x%02X\n", ata->cmdstat);
+		printk(KERN_ERR "Unknown ATA command 0x%02X\n", ata->cmdstat);
 		ata->cmdstat = ATA_ERR;
 		ata->errfeat = ATA_ABORTED;
 		break;
@@ -601,14 +658,13 @@ drop:
 	return NULL;
 }
 
-static struct sk_buff *
-cfg(struct aoedev *d, struct sk_buff *skb)
+static struct sk_buff* cfg(struct aoedev *d, struct sk_buff *skb)
 {
 	struct aoe_hdr *aoe;
 	struct aoe_cfghdr *cfg;
 	int len, cslen, ccmd;
 
-	aoe = (struct aoe_hdr *) skb->mac.raw;
+	aoe = (struct aoe_hdr *) skb_mac_header(skb);
 	cfg = (struct aoe_cfghdr *) aoe->data;
 	cslen = ntohs(cfg->cslen);
 	ccmd = cfg->aoeccmd & 0xf;
@@ -662,8 +718,7 @@ drop:
 	return NULL;
 }
 
-static struct sk_buff *
-make_response(struct sk_buff *skb, int major, int minor)
+static struct sk_buff* make_response(struct sk_buff *skb, int major, int minor)
 {
 	struct aoe_hdr *aoe;
 	struct sk_buff *rskb;
@@ -671,8 +726,8 @@ make_response(struct sk_buff *skb, int major, int minor)
 	rskb = skb_new(skb->dev, skb->dev->mtu);
 	if (rskb == NULL)
 		return NULL;
-	aoe = (struct aoe_hdr *) rskb->mac.raw;
-	memcpy(rskb->mac.raw, skb->mac.raw, skb->len);
+	aoe = (struct aoe_hdr *) skb_mac_header(rskb);
+	memcpy(skb_mac_header(rskb), skb_mac_header(skb), skb->len);
 	memcpy(aoe->dst, aoe->src, ETH_ALEN);
 	memcpy(aoe->src, skb->dev->dev_addr, ETH_ALEN);
 	aoe->type = __constant_htons(ETH_P_AOE);
@@ -683,52 +738,53 @@ make_response(struct sk_buff *skb, int major, int minor)
 	return rskb;
 }
 
-static int
-rcv(struct sk_buff *skb, struct net_device *ndev, struct packet_type *pt, struct net_device *orig_dev)
+static int rcv(struct sk_buff *skb, struct net_device *ndev, struct packet_type *pt, struct net_device *orig_dev)
 {
 	struct aoe_hdr *aoe;
 
 	skb = skb_share_check(skb, GFP_ATOMIC);
-	if (skb == NULL) {
-		dprintk("share check returned nil\n");
+	if (skb == NULL)
 		return -ENOMEM;
-	}
+
 	if (skb_linearize(skb) < 0) {
 		dev_kfree_skb(skb);
 		return -ENOMEM;
 	}
 	skb_push(skb, ETH_HLEN);
 
-	aoe = (struct aoe_hdr *) skb->mac.raw;
+	aoe = (struct aoe_hdr *) skb_mac_header(skb);
 	if (~aoe->verfl & AOEFL_RSP) {
 		skb_queue_tail(&skb_inq, skb);
 		wake_up(&ktwaitq);
 	} else {
 		dev_kfree_skb(skb);
 	}
+
 	return 0;
 }
 
-static void
-ktrcv(struct sk_buff *skb)
+static void ktrcv(struct sk_buff *skb)
 {
 	struct sk_buff *rskb;
 	struct aoedev *d;
 	struct aoe_hdr *aoe;
 	int major, minor;
 
-	aoe = (struct aoe_hdr *) skb->mac.raw;
+	aoe = (struct aoe_hdr *) skb_mac_header(skb);
 	major = be16_to_cpu(aoe->major);
 	minor = aoe->minor;
-      	spin_lock(&lock);
+
+	spin_lock(&lock);
 	for (d=devlist; d; d=d->next) {
-		if ((major != d->major && major != 0xffff)
-		|| (minor != d->minor && minor != 0xff)
-		|| (skb->dev != d->netdev))
+		if ((major != d->major && major != 0xffff) ||
+			(minor != d->minor && minor != 0xff) ||
+			(skb->dev != d->netdev))
 			continue;
+
 		rskb = make_response(skb, d->major, d->minor);
 		if (rskb == NULL)
 			continue;
+
 		switch (aoe->cmd) {
 		case AOECMD_ATA:
 			rskb = ata(d, rskb);
@@ -740,15 +796,16 @@ ktrcv(struct sk_buff *skb)
 			dev_kfree_skb(rskb);
 			continue;
 		}
+
 		if (rskb)
 			skb_queue_tail(&skb_outq, rskb);
 	}
 	spin_unlock(&lock);
+
 	dev_kfree_skb(skb);
 }
 
-static int
-kthread(void *errorparameternameomitted)
+static int kthread(void *errorparameternameomitted)
 {
 	struct sk_buff *iskb, *oskb;
 	DECLARE_WAITQUEUE(wait, current);
@@ -785,29 +842,34 @@ static struct packet_type pt = {
 	.func = rcv,
 };
 
-static int __init
-initm(void)
+static int __init kvblade_module_init(void)
 {
 	skb_queue_head_init(&skb_outq);
 	skb_queue_head_init(&skb_inq);
+	
 	spin_lock_init(&lock);
+	
 	init_completion(&ktrendez);
 	init_waitqueue_head(&ktwaitq);
+	
 	task = kthread_run(kthread, NULL, "kvblade");
 	if (task == NULL || IS_ERR(task))
 		return -EAGAIN;
-	kobject_register(&kobj);
+
+	kobject_init_and_add(&kvblade_kobj, &kvblade_ktype_ops, NULL, "kvblade");
+
 	wait_for_completion(&ktrendez);
 	init_completion(&ktrendez);	// for exit
+
 	dev_add_pack(&pt);
 	return 0;
 }
 
-static void
-exitm(void)
+static __exit void kvblade_module_exit(void)
 {
 	struct aoedev *d, *nd;
 
+	printk("Testing exiting\n");
 	dev_remove_pack(&pt);
 	spin_lock(&lock);
 	d = devlist;
@@ -817,18 +879,22 @@ exitm(void)
 		nd = d->next;
 		while (atomic_read(&d->busy))
 			msleep(100);
-		close_bdev_excl(d->blkdev);
-		kobject_unregister(&d->kobj);
+		blkdev_put(d->blkdev, FMODE_READ|FMODE_WRITE);
+		
+		kobject_del(&d->kobj);
+		kobject_put(&d->kobj);
 	}
 	kthread_stop(task);
 	wait_for_completion(&ktrendez);
 	skb_queue_purge(&skb_outq);
 	skb_queue_purge(&skb_inq);
-	kobject_unregister(&kobj);
+	
+	kobject_del(&kvblade_kobj);
+	kobject_put(&kvblade_kobj);
 }
 
-module_init(initm);
-module_exit(exitm);
+module_init(kvblade_module_init);
+module_exit(kvblade_module_exit);
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Sam Hopkins <sah@coraid.com>");

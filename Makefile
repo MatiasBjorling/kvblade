@@ -20,7 +20,7 @@ prep:
 		echo "Error: $(KDIR) sources are not configured." 1>&2; \
 		false; \
 	}
-	@test  -r "$(KDIR)/include/asm" || { \
+	@test  -r "$(KDIR)/include/asm-generic" || { \
 		echo "Error: $(KDIR) sources are not prepared." 1>&2; \
 		false; \
 	}
