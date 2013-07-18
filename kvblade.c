@@ -12,6 +12,7 @@
 #include <linux/kthread.h>
 #include <linux/ata.h>
 #include <linux/ctype.h>
+#include <linux/kern_levels.h>
 #include "if_aoe.h"
 
 #define xprintk(L, fmt, arg...) printk(L "kvblade: " "%s: " fmt, __func__, ## arg)
@@ -792,6 +793,16 @@ static void ktrcv(struct sk_buff *skb)
 		case AOECMD_CFG:
 			rskb = cfg(d, rskb);
 			break;
+        /*TODO branch on vendor-specifc codes in a meaningful way*/
+        case AOECMD_CREATETREE:
+        case AOECMD_REMOVETREE:
+        case AOECMD_READNODE:
+        case AOECMD_INSERTNODE:
+        case AOECMD_UPDATENODE:
+        case AOECMD_REMOVENODE:
+            printf(KERN_INFO "Received vendor-specific cmd: %u\n", aoe->cmd);
+            dev_kfree_skb(rskb);
+            continue;
 		default:
 			dev_kfree_skb(rskb);
 			continue;

@@ -25,6 +25,13 @@ enum {
 	AOEFL_ERR = 1<<2,
 
 	AOE_HVER = 0x20,
+    /*Support our vendor-specific codes*/
+    AOECMD_CREATETREE = 0xF0,   /*create a new tree*/
+    AOECMD_REMOVETREE,          /*remove a tree and all its child nodes*/
+    AOECMD_READNODE,            /*read data from an node*/
+    AOECMD_INSERTNODE,          /*create a new node with some initial data*/
+    AOECMD_UPDATENODE,          /*update the data of an existing node*/
+    AOECMD_REMOVENODE,          /*remove the node and associated data*/
 };
 
 struct aoe_hdr {
