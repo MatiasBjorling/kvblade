@@ -800,7 +800,7 @@ static void ktrcv(struct sk_buff *skb)
         case AOECMD_INSERTNODE:
         case AOECMD_UPDATENODE:
         case AOECMD_REMOVENODE:
-            printk(KERN_INFO "Received vendor-specific cmd: %u\n", aoe->cmd);
+            printf(KERN_INFO "Received vendor-specific cmd: %u\n", aoe->cmd);
             dev_kfree_skb(rskb);
             continue;
 		default:
