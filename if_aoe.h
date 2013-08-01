@@ -54,7 +54,24 @@ struct aoe_atahdr {
 	unsigned char cmdstat;
 	unsigned char lba[6];
 	unsigned char res[2];
-	unsigned char data[0];
+	/*unsigned char data[0];*/ /*would give the wrong offset inside aoe_datahdr*/
+};
+
+struct aoe_treehdr {
+    u64 tid;
+    u64 nid;
+    u64 off;
+    u64 len;
+    u32 err;
+};
+
+/*branch on AoE command value?*/
+struct aoe_datahdr {
+    union {
+        struct aoe_atahdr ata;
+        struct aoe_treehdr tree;
+    };
+    unsigned char data[0];
 };
 
 struct aoe_cfghdr {

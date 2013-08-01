@@ -12,10 +12,18 @@ SBINDIR		:= ${PREFIX}/usr/sbin
 MANDIR		:= ${PREFIX}/usr/share/man
 CMDS		:= kvstat kvadd kvdel
 
+ifndef CLYDEFSCORE_MODULE
+  $(error CLYDEFSCORE_MODULE is not set)
+endif
+
 default: prep
-	$(MAKE) -C $(KDIR) M="$(PWD)" SUBDIRS="$(PWD)" modules
+	$(MAKE) -C $(KDIR) M="$(PWD)" SUBDIRS="$(PWD)" KBUILD_EXTRA_SYMBOLS="$(CLYDEFSCORE_MODULE)/Module.symvers" modules
 
 prep:
+	@test -r "$(CLYDEFSCORE_MODULE)/Module.symvers" || { \
+		echo "Error: $(CLYDEFSCORE_MODULE) was not build, no Module.symvers file found!" 1>&2; \
+		false; \
+	}
 	@test -r "$(KDIR)/.config" || { \
 		echo "Error: $(KDIR) sources are not configured." 1>&2; \
 		false; \

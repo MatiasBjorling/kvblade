@@ -14,6 +14,7 @@
 #include <linux/ctype.h>
 #include <linux/kern_levels.h>
 #include "if_aoe.h"
+#include "clydeinterface.h"
 
 #define xprintk(L, fmt, arg...) printk(L "kvblade: " "%s: " fmt, __func__, ## arg)
 #define iprintk(fmt, arg...) xprintk(KERN_INFO, fmt, ## arg)
@@ -22,13 +23,25 @@
 #define dprintk(fmt, arg...) if(0);else xprintk(KERN_DEBUG, fmt, ## arg)
 
 #define nelem(A) (sizeof (A) / sizeof (A)[0])
-#define MAXSECTORS(mtu) (((mtu) - sizeof (struct aoe_hdr) - sizeof (struct aoe_atahdr)) / 512)
+#define MAXSECTORS(mtu) (((mtu) - sizeof (struct aoe_hdr) - sizeof (struct aoe_datahdr)) / 512)
 
 static struct kobject kvblade_kobj;
+
+typedef enum {
+    INCOMING = 1,
+    OUTGOING,
+} frame_direction_t;
 
 enum {
 	ATA_MODEL_LEN =	40,
 	ATA_LBA28MAX = 0x0fffffff,
+};
+
+enum {
+    TERR = 1,
+    TERR_ALLOC_FAILED,
+    TERR_NO_SUCH_ELEMENT,
+    TERR_BUSY,
 };
 
 struct aoedev;
@@ -468,12 +481,13 @@ static void setfld(u16 *a, int idx, int len, char *str)
 	}
 }
 
-static int ata_identify(struct aoedev *d, struct aoe_atahdr *ata)
+static int ata_identify(struct aoedev *d, struct aoe_datahdr *dh)
 {
 	char 	buf[64];
-	u16     *words  = (u16 *)ata->data;
+	u16     *words  = (u16 *)dh->data;
 	u8      *cp;
 	loff_t  scnt;
+
 
 	memset(words, 0, 512);
 
@@ -519,7 +533,7 @@ static void ata_io_complete(struct bio *bio, int error)
 	struct aoedev *d;
 	struct sk_buff *skb;
 	struct aoe_hdr *aoe;
-	struct aoe_atahdr *ata;
+    struct aoe_datahdr *dh;
 	int len;
 	unsigned int bytes = 0;
 
@@ -531,20 +545,20 @@ static void ata_io_complete(struct bio *bio, int error)
 	skb = rq->skb;
 
 	aoe = (struct aoe_hdr *) skb_mac_header(skb);
-	ata = (struct aoe_atahdr *) aoe->data;
+	dh = (struct aoe_datahdr *) aoe->data;
 
-	len = sizeof *aoe + sizeof *ata;
+	len = sizeof *aoe + sizeof *dh;
 	if (bio_flagged(bio, BIO_UPTODATE)) {
 		if (bio_data_dir(bio) == READ)
 			len += bytes;
-		ata->scnt = 0;
-		ata->cmdstat = ATA_DRDY;
-		ata->errfeat = 0;
+		dh->ata.scnt = 0;
+		dh->ata.cmdstat = ATA_DRDY;
+		dh->ata.errfeat = 0;
 		// should increment lba here, too
 	} else {
 		printk(KERN_ERR "I/O error %d on %s\n", error, d->kobj.name);
-		ata->cmdstat = ATA_ERR | ATA_DF;
-		ata->errfeat = ATA_UNC | ATA_ABORTED;
+		dh->ata.cmdstat = ATA_ERR | ATA_DF;
+		dh->ata.errfeat = ATA_UNC | ATA_ABORTED;
 	}
 
 	bio_put(bio);
@@ -572,7 +586,7 @@ static inline loff_t readlba(u8 *lba)
 static struct sk_buff * ata(struct aoedev *d, struct sk_buff *skb)
 {
 	struct aoe_hdr *aoe;
-	struct aoe_atahdr *ata;
+    struct aoe_datahdr *dh;
 	struct aoereq *rq, *e;
 	struct bio *bio;
 	sector_t lba;
@@ -581,10 +595,10 @@ static struct sk_buff * ata(struct aoedev *d, struct sk_buff *skb)
 	ulong bcnt, offset;
 
 	aoe = (struct aoe_hdr *) skb_mac_header(skb);
-	ata = (struct aoe_atahdr *) aoe->data;
-	lba = readlba(ata->lba);
-	len = sizeof *aoe + sizeof *ata;
-	switch (ata->cmdstat) {
+	dh = (struct aoe_datahdr *) aoe->data;
+	lba = readlba(dh->ata.lba);
+	len = sizeof *aoe + sizeof *dh;
+	switch (dh->ata.cmdstat) {
 	do {
 	case ATA_CMD_PIO_READ:
 		lba &= ATA_LBA28MAX;
@@ -598,11 +612,11 @@ static struct sk_buff * ata(struct aoedev *d, struct sk_buff *skb)
 		lba &= 0x0000FFFFFFFFFFFFULL;
 		rw = WRITE;
 	} while (0);
-		if ((lba + ata->scnt) > d->scnt) {
+		if ((lba + dh->ata.scnt) > d->scnt) {
 			printk(KERN_ERR "sector I/O is out of range: %Lu (%d), max %Lu\n",
-				(long long) lba, ata->scnt, d->scnt);
-			ata->cmdstat = ATA_ERR;
-			ata->errfeat = ATA_IDNF;
+				(long long) lba, dh->ata.scnt, d->scnt);
+			dh->ata.cmdstat = ATA_ERR;
+			dh->ata.errfeat = ATA_IDNF;
 			break;
 		}
 		rq = d->reqs;
@@ -626,12 +640,12 @@ static struct sk_buff * ata(struct aoedev *d, struct sk_buff *skb)
 		bio->bi_end_io = ata_io_complete;
 		bio->bi_private = rq;
 
-		page = virt_to_page(ata->data);
-		bcnt = ata->scnt << 9;
-		offset = offset_in_page(ata->data);
+		page = virt_to_page(dh->data);
+		bcnt = dh->ata.scnt << 9;
+		offset = offset_in_page(dh->data);
 
 		if (bio_add_page(bio, page, bcnt, offset) < bcnt) {
-			printk(KERN_ERR "Can't bio_add_page for %d sectors\n", ata->scnt);
+			printk(KERN_ERR "Can't bio_add_page for %d sectors\n", dh->ata.scnt);
 			bio_put(bio);
 			goto drop;
 		}
@@ -641,15 +655,15 @@ static struct sk_buff * ata(struct aoedev *d, struct sk_buff *skb)
 		submit_bio(rw, bio);
 		return NULL;
 	default:
-		printk(KERN_ERR "Unknown ATA command 0x%02X\n", ata->cmdstat);
-		ata->cmdstat = ATA_ERR;
-		ata->errfeat = ATA_ABORTED;
+		printk(KERN_ERR "Unknown ATA command 0x%02X\n", dh->ata.cmdstat);
+		dh->ata.cmdstat = ATA_ERR;
+		dh->ata.errfeat = ATA_ABORTED;
 		break;
 	case ATA_CMD_ID_ATA:
-		len += ata_identify(d, ata);
+		len += ata_identify(d, dh);
 	case ATA_CMD_FLUSH:
-		ata->cmdstat = ATA_DRDY;
-		ata->errfeat = 0;
+		dh->ata.cmdstat = ATA_DRDY;
+		dh->ata.errfeat = 0;
 		break;
 	}
 	skb_trim(skb, len);
@@ -719,6 +733,198 @@ drop:
 	return NULL;
 }
 
+static __always_inline char *treecmd_name(unsigned char cmd)
+{
+    switch (cmd) {
+    case AOECMD_CREATETREE:
+        return "AOECMD_CREATETREE";
+    case AOECMD_REMOVETREE:
+        return "AOECMD_REMOVETREE";
+    case AOECMD_READNODE:
+        return "AOECMD_READNODE";
+    case AOECMD_INSERTNODE:
+        return "AOECMD_INSERTNODE";
+    case AOECMD_UPDATENODE:
+        return "AOECMD_UPDATENODE";
+    case AOECMD_REMOVENODE:
+        return "AOECMD_REMOVENODE";
+    default:
+        return "UNKNOWN_TREE_CMD";
+    }
+}
+
+#if 0
+static __always_inline void print_tree_frame(struct aoe_hdr *ah, struct aoe_datahdr *dh)
+{
+    int *data =NULL;
+    printk("cmd: %s\n", treecmd_name(ah->cmd));
+    printk("\ttid: %llu\n", dh->tree.tid);
+    printk("\tnid: %llu\n", dh->tree.nid);
+    printk("\toffset: %llu\n", dh->tree.off);
+    printk("\tlen: %llu\n", dh->tree.len);
+
+    if (dh->data != NULL) {
+        printk("\tDATA FOUND\n");
+        data = (int*) dh->data;
+        printk("data: %0x | %u \n", *data, *data);
+    } else {
+        printk("\tNO DATA\n");
+    }
+}
+#endif
+
+#if 0
+/** 
+ * Writes data to the data portion of the outgoing packet. 
+ * @description writes data to the data portion of the outgoing 
+ *              packet, adjusting its size as it finishes.
+ * @param skb the socket buffer of the packet 
+ * @param dh points to the offset within skb where the aoe data 
+ *           header starts
+ * @param errcode the errorcode of the tree cmd 
+ * @param buffer_len the length of the supplied buffer
+ * @param buffer the start of the buffer 
+ */
+static __always_inline void treecmd_write_skb_data(struct sk_buff *skb, struct aoe_datahdr *dh, int errcode, u64 buffer_len, void *buffer)
+{
+    ulong offset;
+    struct page *page;
+    u8 *skb_data = (u8*)skb->data;
+    #if 0
+    rq->bio = bio;
+		rq->d = d;
+
+		bio->bi_sector = lba;
+		bio->bi_bdev = d->blkdev;
+		bio->bi_end_io = ata_io_complete;
+		bio->bi_private = rq;
+
+		page = virt_to_page(dh->data);
+		bcnt = dh->ata.scnt << 9;
+		offset = offset_in_page(dh->data);
+
+		if (bio_add_page(bio, page, bcnt, offset) < bcnt) {
+			printk(KERN_ERR "Can't bio_add_page for %d sectors\n", dh->ata.scnt);
+			bio_put(bio);
+			goto drop;
+		}
+
+		rq->skb = skb;
+    #endif
+
+    
+    /*first, write the error code*/
+    memcpy(skb->data, &errcode, sizeof(int));
+    skb_data += sizeof(int);
+
+    page = virt_to_page(skb_data);
+    offset = offset_in_page(skb_data);
+    
+    skb->len = sizeof(int) + len;
+}
+#endif
+
+static __always_inline void set_errcode(struct aoe_datahdr *dh, int errcode)
+{
+    memcpy(dh->data, &errcode, sizeof(int));
+}
+
+static __always_inline u32 translate_err_code(int errcode)
+{
+    switch(errcode) {
+    case -ENOENT:
+        return TERR_NO_SUCH_ELEMENT;
+    case -ENOMEM:
+        return TERR_ALLOC_FAILED;
+    default:
+        break;
+    }
+    return TERR;
+}
+
+static void __dbg_print_treecmd(frame_direction_t dir, struct aoe_hdr *ah, struct aoe_datahdr *dh)
+{
+    printk("%s cmd(%u),tid(%llu),nid(%llu),off(%llu),len(%llu) ", (dir == INCOMING ? "=>" : "<="), ah->cmd, dh->tree.tid, dh->tree.nid, dh->tree.off, dh->tree.len);
+    if (ah->cmd == AOECMD_UPDATENODE && dir == INCOMING) {
+        printk("[%s]\n", dh->data);
+    } else if (ah->cmd == AOECMD_READNODE && dir == OUTGOING) {
+        printk("[%s]\n", dh->data);
+    } else {
+        printk("\n");
+    }
+}
+static struct sk_buff *treecmd(struct aoedev *d, struct sk_buff *skb)
+{
+    struct aoe_hdr *ah;
+    struct aoe_datahdr *dh;
+    u64 tree_ret;
+    int retval;
+
+    ah = (struct aoe_hdr *) skb_mac_header(skb);
+	dh = (struct aoe_datahdr *) ah->data;
+
+    __dbg_print_treecmd(INCOMING,ah,dh);
+
+    switch(ah->cmd) {
+    case AOECMD_CREATETREE:
+        /*FIXME: guard against retval==0 which indicates a failure to make a tree*/
+        tree_ret = clydefscore_tree_create(10);
+        if(likely(tree_ret)){ /*success*/
+            dh->tree.tid = tree_ret;
+            dh->tree.err = 0;
+        } else {
+            dh->tree.err = TERR_ALLOC_FAILED;
+        }
+        skb_trim(skb, sizeof(*ah) + sizeof(*dh));
+        break;
+    case AOECMD_REMOVETREE:
+        retval = clydefscore_tree_remove(dh->tree.tid);
+        if (retval) { /*error*/
+            dh->tree.err = (retval == -ENOENT ? TERR_NO_SUCH_ELEMENT : TERR_BUSY);
+        }
+        skb_trim(skb, sizeof(*ah) + sizeof(*dh));
+        break;
+    case AOECMD_UPDATENODE:
+        retval = clydefscore_node_write(dh->tree.tid, dh->tree.nid, dh->tree.off, dh->tree.len, dh->data);
+        if(unlikely(retval)) { /*error*/
+            dh->tree.err = translate_err_code(retval);
+        }
+        skb_trim(skb, sizeof(*ah)+sizeof(*dh));
+        break;
+    case AOECMD_INSERTNODE:
+        retval = clydefscore_node_insert(dh->tree.tid, &dh->tree.nid);
+        if (unlikely(retval)) { /* error */
+            dh->tree.err = translate_err_code(retval);
+        }
+        skb_trim(skb, sizeof(*ah) + sizeof(*dh));
+        break;
+    case AOECMD_READNODE:
+        retval = clydefscore_node_read(dh->tree.tid, dh->tree.nid, dh->tree.off, dh->tree.len, dh->data);
+        if(unlikely(retval)) {
+            dh->tree.err = translate_err_code(retval);
+            skb_trim(skb, sizeof(*ah) + sizeof(*dh));
+        } else {
+            /*FIXME dh->tree.len -- cannot use u64 across our ethernet interface 
+              anyway, but it's technically breaking the interface*/
+            skb_trim(skb, sizeof(*ah) + sizeof(*dh) + (dh->tree.len & 0xFFFFFFFF));        
+        }
+        break;
+    case AOECMD_REMOVENODE:
+        retval = clydefscore_node_remove(dh->tree.tid, dh->tree.nid);
+        if (unlikely(retval)) { /* error */
+            dh->tree.err = (retval == -ENOENT ? TERR_NO_SUCH_ELEMENT : TERR);
+        }
+        skb_trim(skb, sizeof(*ah) + sizeof(*dh));
+        break;
+    default:
+        pr_alert("UNKNOWN TREE CMD SENT, CODE: (%u)\n", ah->cmd);
+        return NULL; /*FIXME: always dropping now*/
+    }
+    __dbg_print_treecmd(OUTGOING, ah, dh);
+    
+    return skb;
+}
+
 static struct sk_buff* make_response(struct sk_buff *skb, int major, int minor)
 {
 	struct aoe_hdr *aoe;
@@ -764,6 +970,12 @@ static int rcv(struct sk_buff *skb, struct net_device *ndev, struct packet_type 
 	return 0;
 }
 
+static __always_inline int is_tree_cmd(unsigned char cmd)
+{
+    /*check that cmd is inside the range of values designating tree commands*/
+    return (cmd >= AOECMD_CREATETREE) && (cmd <= AOECMD_REMOVENODE);
+}
+
 static void ktrcv(struct sk_buff *skb)
 {
 	struct sk_buff *rskb;
@@ -776,6 +988,7 @@ static void ktrcv(struct sk_buff *skb)
 	minor = aoe->minor;
 
 	spin_lock(&lock);
+
 	for (d=devlist; d; d=d->next) {
 		if ((major != d->major && major != 0xffff) ||
 			(minor != d->minor && minor != 0xff) ||
@@ -800,9 +1013,9 @@ static void ktrcv(struct sk_buff *skb)
         case AOECMD_INSERTNODE:
         case AOECMD_UPDATENODE:
         case AOECMD_REMOVENODE:
-            printf(KERN_INFO "Received vendor-specific cmd: %u\n", aoe->cmd);
-            dev_kfree_skb(rskb);
-            continue;
+            printk(KERN_INFO "Received vendor-specific cmd: %u\n", aoe->cmd);
+            rskb = treecmd(d,rskb);
+            break;
 		default:
 			dev_kfree_skb(rskb);
 			continue;
@@ -811,6 +1024,8 @@ static void ktrcv(struct sk_buff *skb)
 		if (rskb)
 			skb_queue_tail(&skb_outq, rskb);
 	}
+
+    
 	spin_unlock(&lock);
 
 	dev_kfree_skb(skb);
