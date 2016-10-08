@@ -34,6 +34,15 @@ enum {
 	AOE_HVER = 0x10,
 };
 
+enum
+{
+	AOEERR_CMD= 1,
+	AOEERR_ARG,
+	AOEERR_DEV,
+	AOEERR_CFG,
+	AOEERR_VER,
+};
+
 struct aoe_hdr {
 	unsigned char dst[6];
 	unsigned char src[6];
