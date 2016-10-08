@@ -101,21 +101,3 @@ enum {
 enum frame_flags {
 	FFL_PROBE = 1,
 };
-
-struct aoetgt {
-	unsigned char addr[6];
-	ushort nframes;		/* cap on frames to use */
-	struct aoedev *d;			/* parent device I belong to */
-	struct list_head ffree;			/* list of free frames */
-	struct aoeif ifs[NAOEIFS];
-	struct aoeif *ifp;	/* current aoeif in use */
-	ushort nout;		/* number of AoE commands outstanding */
-	ushort maxout;		/* current value for max outstanding */
-	ushort next_cwnd;	/* incr maxout after decrementing to zero */
-	ushort ssthresh;	/* slow start threshold */
-	ulong falloc;		/* number of allocated frames */
-	int taint;		/* how much we want to avoid this aoetgt */
-	int minbcnt;
-	int wpkts, rpkts;
-	char nout_probes;
-};
