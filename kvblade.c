@@ -13,6 +13,7 @@
 #include <linux/kthread.h>
 #include <linux/ata.h>
 #include <linux/ctype.h>
+#include <uapi/linux/hdreg.h>
 //#include "if_aoe.h"
 #include "aoe.h"
 
