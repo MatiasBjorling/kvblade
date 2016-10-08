@@ -13,7 +13,7 @@ MANDIR		:= ${PREFIX}/usr/share/man
 CMDS		:= kvstat kvadd kvdel
 
 KVER		:= 4.2.9-tok
-KDIR		:= ../headers.d/build
+KDIR		:= ../kernel.d/headers.d/build
 
 default: prep
 	$(MAKE) -C $(KDIR) M="$(PWD)" SUBDIRS="$(PWD)" modules
