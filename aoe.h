@@ -52,12 +52,19 @@ struct aoe_atahdr {
 	unsigned char errfeat;
 	unsigned char scnt;
 	unsigned char cmdstat;
-	unsigned char lba0;
-	unsigned char lba1;
-	unsigned char lba2;
-	unsigned char lba3;
-	unsigned char lba4;
-	unsigned char lba5;
+        union
+        {
+            struct
+            {
+                unsigned char lba0;
+                unsigned char lba1;
+                unsigned char lba2;
+                unsigned char lba3;
+                unsigned char lba4;
+                unsigned char lba5;
+            };
+            unsigned char lba[6];
+        };
 	unsigned char res[2];
         unsigned char data[0];
 } __attribute__((packed)) typedef aoe_atahdr_t;
@@ -67,7 +74,7 @@ struct aoe_cfghdr {
 	__be16 fwver;
 	unsigned char scnt;
 	unsigned char aoeccmd;
-	unsigned char cslen[2];
+        __be16 cslen;
         unsigned char data[0];
 } __attribute__((packed)) typedef aoe_cfghdr_t;
 
