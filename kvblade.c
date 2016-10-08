@@ -13,7 +13,8 @@
 #include <linux/kthread.h>
 #include <linux/ata.h>
 #include <linux/ctype.h>
-#include "if_aoe.h"
+//#include "if_aoe.h"
+#include "aoe.h"
 
 #define xprintk(L, fmt, arg...) printk(L "kvblade: " "%s: " fmt, __func__, ## arg)
 #define iprintk(fmt, arg...) xprintk(KERN_INFO, fmt, ## arg)
