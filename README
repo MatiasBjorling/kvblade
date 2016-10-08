@@ -38,4 +38,15 @@ Thanks to Lelik P. Korchagin for writing the first
 kernel vblade module.  It was quite helpful as a
 reference implementation.
 
+---
 
+Forked for the Tokera initiative
+
+Fixes:
+* compile issues for Linux Kernel 4.2.9
+
+TODO:
+* add multiple threads working the queues
+* remove the spinlock and replace with RCU symatics
+* create per_cpu optimizations
+* remove the memory zero and linearize operations
