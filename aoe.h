@@ -44,7 +44,8 @@ struct aoe_hdr {
 	unsigned char minor;
 	unsigned char cmd;
 	__be32 tag;
-};
+        unsigned char data[0];
+} __attribute__((packed)) typedef aoe_hdr_t;
 
 struct aoe_atahdr {
 	unsigned char aflags;
@@ -58,7 +59,8 @@ struct aoe_atahdr {
 	unsigned char lba4;
 	unsigned char lba5;
 	unsigned char res[2];
-};
+        unsigned char data[0];
+} __attribute__((packed)) typedef aoe_atahdr_t;
 
 struct aoe_cfghdr {
 	__be16 bufcnt;
@@ -66,7 +68,8 @@ struct aoe_cfghdr {
 	unsigned char scnt;
 	unsigned char aoeccmd;
 	unsigned char cslen[2];
-};
+        unsigned char data[0];
+} __attribute__((packed)) typedef aoe_cfghdr_t;
 
 enum {
 	DEVFL_UP = 1,	/* device is installed in system and ready for AoE->ATA commands */
