@@ -23,6 +23,16 @@
 #define nelem(A) (sizeof (A) / sizeof (A)[0])
 #define MAXSECTORS(mtu) (((mtu) - sizeof (struct aoe_hdr) - sizeof (struct aoe_atahdr)) / 512)
 
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(3,14,0)
+#define bio_sector(bio)	((bio)->bi_sector)
+#define bio_size(bio) ((bio)->bi_size)
+#define bio_idx(bio) ((bio)->bi_idx)
+#else
+#define bio_sector(bio)	((bio)->bi_iter.bi_sector)
+#define bio_size(bio) ((bio)->bi_iter.bi_size)
+#define bio_idx(bio) ((bio)->bi_iter.bi_idx)
+#endif
+
 static struct kobject kvblade_kobj;
 
 enum {
@@ -620,7 +630,7 @@ static struct sk_buff * ata(struct aoedev *d, struct sk_buff *skb)
 		rq->bio = bio;
 		rq->d = d;
 
-		bio->bi_sector = lba;
+                bio_sector(bio) = lba;
 		bio->bi_bdev = d->blkdev;
 		bio->bi_end_io = ata_io_complete;
 		bio->bi_private = rq;
@@ -899,4 +909,3 @@ module_exit(kvblade_module_exit);
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Sam Hopkins <sah@coraid.com>");
 MODULE_DESCRIPTION("Virtual EtherDrive(R) Blade");
-
