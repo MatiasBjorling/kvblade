@@ -1,4 +1,5 @@
 KVER		:= $(shell uname -r)
+KVER		:= 4.2.9-tok
 KDIR		:= /lib/modules/$(KVER)/build
 INSTDIR		:= /lib/modules/$(KVER)/kernel/drivers/block
 KMAK_FLAGS	:= \
