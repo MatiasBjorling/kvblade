@@ -103,10 +103,9 @@ struct kvblade_sysfs_entry {
 
 struct aoethread {
 
-    struct sk_buff_head skb_outq_fast;
-    struct sk_buff_head skb_inq_fast;
     struct sk_buff_head skb_outq;
     struct sk_buff_head skb_inq;
+    atomic_t            announce_all;
     
     struct completion   ktrendez;
     wait_queue_head_t   ktwaitq;
@@ -207,21 +206,15 @@ static int count_busy(struct aoedev *d) {
     return ret;
 }
 
-static struct sk_buff* kvblade_announce_prepare(struct aoedev *d)
-{
+static void announce(struct aoedev *d, struct aoethread* t) {
     struct sk_buff* skb;
+    struct aoe_hdr *aoe;
+    struct aoe_cfghdr *cfg;
     int len = sizeof(struct aoe_hdr) + sizeof(struct aoe_cfghdr) + d->nconfig;
-
+    
     skb = skb_new(d->netdev, len);
     if (skb == NULL)
         return NULL;
-    
-    return skb;
-}
-
-static void kvblade_announce(struct aoedev *d, struct aoethread* t, struct sk_buff* skb) {
-    struct aoe_hdr *aoe;
-    struct aoe_cfghdr *cfg;
     
     aoe = (struct aoe_hdr *) skb_mac_header(skb);
     cfg = (struct aoe_cfghdr *) aoe->data;
@@ -247,45 +240,7 @@ static void kvblade_announce(struct aoedev *d, struct aoethread* t, struct sk_bu
         memcpy(cfg->data, d->config, d->nconfig);
     }
     
-    //__skb_queue_tail(&t->skb_outq_fast, skb);
     skb_queue_tail(&t->skb_outq, skb);
-}
-
-static ssize_t kvblade_announce_all(void) {    
-    struct aoethread* t;
-    struct aoedev *d, *d2;
-    struct sk_buff* skb;
-    
-    spin_lock(&root.lock);    
-    rcu_read_lock();
-    hlist_for_each_entry_rcu_notrace(d, &root.devlist, node)
-    {
-        rcu_read_unlock();
-        
-        skb = kvblade_announce_prepare(d);
-        if (skb == NULL) {
-            spin_unlock(&root.lock);
-            return 0;
-        }
-        
-        t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, get_cpu());
-        kvblade_announce(d, t, skb);
-        put_cpu();
-        
-        wake_up(&t->ktwaitq);
-        
-        rcu_read_lock();
-        hlist_for_each_entry_rcu_notrace(d2, &root.devlist, node) {
-            if (d2 == d)
-                break;
-        }
-        if (d2 == NULL)
-            break;
-    }
-    rcu_read_unlock();    
-    spin_unlock(&root.lock);
-    
-    return 0;
 }
 
 static ssize_t kvblade_add(u32 major, u32 minor, char *ifname, char *path) {
@@ -381,16 +336,11 @@ static ssize_t kvblade_add(u32 major, u32 minor, char *ifname, char *path) {
 
     dprintk("added %s as %d.%d@%s: %Lu sectors.\n",
             path, major, minor, ifname, d->scnt);
-    
-    skb = kvblade_announce_prepare(d);
-    if (skb != NULL)
-    {    
-        t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, get_cpu());
-        kvblade_announce(d, t, skb);
-        put_cpu();
 
-        wake_up(&t->ktwaitq);
-    }
+    t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, get_cpu());
+    atomic_set(&t->announce_all, 1);
+    put_cpu();
+    
     return 0;
 err:
     blkdev_put(bd, FMODE_READ | FMODE_WRITE);
@@ -505,12 +455,15 @@ static struct kvblade_sysfs_entry kvblade_sysfs_del = __ATTR(del, 0644, NULL, st
 static ssize_t store_announce(struct aoedev *dev, const char *page, size_t len) {
     int error = 0;
     char *p;
+    struct aoethread* t;
 
     p = kmalloc(len + 1, GFP_KERNEL);
     memcpy(p, page, len);
     p[len] = '\0';
 
-    error = kvblade_announce_all();
+    t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, get_cpu());
+    atomic_set(&t->announce_all, 1);
+    put_cpu();
 
     kfree(p);
     return error ? error : len;
@@ -904,6 +857,20 @@ drop:
     return NULL;
 }
 
+static void ktannounce(struct aoethread* t) {
+    struct aoedev *d;
+    struct sk_buff* skb;
+    
+    spin_lock(&root.lock);
+    hlist_for_each_entry_rcu_notrace(d, &root.devlist, node)
+    {        
+        announce(d, t);
+    }
+    spin_unlock(&root.lock);
+    
+    return 0;
+}
+
 static struct sk_buff* make_response(struct sk_buff *skb, int major, int minor) {
     struct aoe_hdr *aoe;
     struct sk_buff *rskb;
@@ -941,7 +908,6 @@ static int rcv(struct sk_buff *skb, struct net_device *ndev, struct packet_type 
     if (~aoe->verfl & AOEFL_RSP)
     {
         t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, get_cpu());
-        //__skb_queue_tail(&t->skb_inq_fast, skb);
         skb_queue_tail(&t->skb_inq, skb);
         put_cpu();
         
@@ -997,10 +963,7 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
         }
         
         if (rskb) {
-            skb_queue_tail(&t->skb_outq, rskb);            
-            //preempt_disable();
-            //__skb_queue_tail(&t->skb_outq_fast, rskb);
-            //preempt_enable();
+            skb_queue_tail(&t->skb_outq, rskb); 
         }
 
         // If its a specific address then we are finished
@@ -1039,9 +1002,7 @@ static int kthread(void* data) {
     DECLARE_WAITQUEUE(wait, current);
     sigset_t blocked;
     
-    skb_queue_head_init(&t->skb_outq_fast);
     skb_queue_head_init(&t->skb_outq);
-    skb_queue_head_init(&t->skb_inq_fast);
     skb_queue_head_init(&t->skb_inq);
 
 #ifdef PF_NOFREEZE
@@ -1059,29 +1020,17 @@ static int kthread(void* data) {
         __set_current_state(TASK_RUNNING);
         
         do {
-            preempt_disable();
-            do {
-                if ((iskb = __skb_dequeue(&t->skb_inq_fast)))
-                {
-                    preempt_enable();
-                    ktrcv(t, iskb);
-                    preempt_disable();
-                }
-                if ((oskb = __skb_dequeue(&t->skb_outq_fast)))
-                {
-                    preempt_enable();
-                    dev_queue_xmit(oskb);
-                    preempt_disable();
-                }
-            } while (iskb || oskb);
-            preempt_enable();
-        
             if ((iskb = skb_dequeue(&t->skb_inq)))
                 ktrcv(t, iskb);
             if ((oskb = skb_dequeue(&t->skb_outq)))
                 dev_queue_xmit(oskb);
             
         } while (iskb || oskb);
+    
+        if (atomic_xchg(&t->announce_all, 0) > 0) {
+            ktannounce(t);
+            continue;
+        }
         
         set_current_state(TASK_INTERRUPTIBLE);
         add_wait_queue(&t->ktwaitq, &wait);
@@ -1090,8 +1039,6 @@ static int kthread(void* data) {
         
     } while (!kthread_should_stop());
     
-    skb_queue_purge(&t->skb_outq_fast);
-    skb_queue_purge(&t->skb_inq_fast);
     skb_queue_purge(&t->skb_outq);
     skb_queue_purge(&t->skb_inq);
     
