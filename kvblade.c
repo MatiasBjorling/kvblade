@@ -342,7 +342,7 @@ static ssize_t kvblade_del(u32 major, u32 minor, char *ifname) {
         goto err;
     }
 
-    hlist_del_rcu(d);
+    hlist_del_rcu(&d->node);
     rcu_read_unlock();
     
     spin_unlock(&root.lock);
