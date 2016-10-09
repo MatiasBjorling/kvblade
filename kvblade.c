@@ -107,7 +107,7 @@ struct core
     struct kmem_cache*  aoe_rq_cache;
     struct kobject      kvblade_kobj;
     
-    struct aoethread    thread;
+    struct aoethread*   thread_percpu;
     
 } typedef core_t;
 
@@ -221,6 +221,7 @@ static ssize_t kvblade_add(u32 major, u32 minor, char *ifname, char *path) {
     struct aoedev *d, *td;
     int ret = 0;
     struct aoethread* t;
+    int cpu;
 
     printk("kvblade_add\n");
     nd = dev_get_by_name(&init_net, ifname);
@@ -292,8 +293,9 @@ static ssize_t kvblade_add(u32 major, u32 minor, char *ifname, char *path) {
     dprintk("added %s as %d.%d@%s: %Lu sectors.\n",
             path, major, minor, ifname, d->scnt);
     
-    t = &root.thread;
+    t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, get_cpu());
     kvblade_announce(d, t);
+    put_cpu();
     
     return 0;
 err:
@@ -804,9 +806,11 @@ static int rcv(struct sk_buff *skb, struct net_device *ndev, struct packet_type 
     aoe = (struct aoe_hdr *) skb_mac_header(skb);
     if (~aoe->verfl & AOEFL_RSP)
     {
-        t = &root.thread;
+        t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, get_cpu());
         skb_queue_tail(&t->skb_inq, skb);
         wake_up(&t->ktwaitq);
+        put_cpu();
+        
     } else {
         dev_kfree_skb(skb);
     }
@@ -877,11 +881,13 @@ static int kthread(void* data) {
 #ifdef PF_NOFREEZE
     current->flags |= PF_NOFREEZE;
 #endif
-    set_user_nice(current, -5);
+    set_user_nice(current, -20);
     sigfillset(&blocked);
     sigprocmask(SIG_BLOCK, &blocked, NULL);
     flush_signals(current);
     complete(&t->ktrendez);
+    
+    printk(KERN_INFO "tokmodule: Started a new kvblade thread (%d)\n", smp_processor_id());
     
     do {
         __set_current_state(TASK_RUNNING);
@@ -900,6 +906,8 @@ static int kthread(void* data) {
     skb_queue_purge(&t->skb_outq);
     skb_queue_purge(&t->skb_inq);
     
+    printk(KERN_INFO "tokmodule: Stopped a kvblade thread (%d)\n", smp_processor_id());
+    
     __set_current_state(TASK_RUNNING);
     complete(&t->ktrendez);
     
@@ -913,27 +921,36 @@ static struct packet_type pt = {
 
 static int __init kvblade_module_init(void) {
     struct aoethread* t;
+    int n;
 
     root.aoe_rq_cache = kmem_cache_create("aoe_rq_cache", sizeof (aoereq_t), sizeof (aoereq_t), SLAB_HWCACHE_ALIGN, NULL);
     if (root.aoe_rq_cache == NULL) return -ENOMEM;
-
+    
+    root.thread_percpu = (struct aoethread*)alloc_percpu(struct aoethread);
+    if (root.thread_percpu == NULL) return -ENOMEM;
+    
     INIT_HLIST_HEAD(&root.devlist);
     spin_lock_init(&root.lock);
 
-    t = &root.thread;
-    memset(t, 0, sizeof(aoethread_t));
-    init_completion(&t->ktrendez);
-    init_waitqueue_head(&t->ktwaitq);
+    for (n = 0; n < num_online_cpus(); n++) {
+        t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, n);
+    
+        memset(t, 0, sizeof(aoethread_t));
+        init_completion(&t->ktrendez);
+        init_waitqueue_head(&t->ktwaitq);
 
-    t->task = kthread_run(kthread, t, "kvblade");
-    if (t->task == NULL || IS_ERR(t->task))
-        return -EAGAIN;
+        t->task = kthread_run(kthread, t, "kvblade");
+        if (t->task == NULL || IS_ERR(t->task))
+            return -EAGAIN;
+    }
 
     kobject_init_and_add(&root.kvblade_kobj, &kvblade_ktype_ops, NULL, "kvblade");
 
-    t = &root.thread;
-    wait_for_completion(&t->ktrendez);
-    init_completion(&t->ktrendez); // for exit
+    for (n = 0; n < num_online_cpus(); n++) {
+        t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, n);
+        wait_for_completion(&t->ktrendez);
+        init_completion(&t->ktrendez); // for exit
+    }
 
     dev_add_pack(&pt);
     return 0;
@@ -942,6 +959,7 @@ static int __init kvblade_module_init(void) {
 static __exit void kvblade_module_exit(void) {
     struct aoedev *d, *nd;
     struct aoethread* t;
+    int n;
 
     dev_remove_pack(&pt);
     
@@ -960,12 +978,20 @@ static __exit void kvblade_module_exit(void) {
         call_rcu(&d->rcu, kvblade_del_rcu);
     }
     
-    t = &root.thread;
-    kthread_stop(t->task);
-    wait_for_completion(&t->ktrendez);
+    for (n = 0; n < num_online_cpus(); n++)
+    {
+        t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, n);
+        kthread_stop(t->task);
+        wait_for_completion(&t->ktrendez);
+    }
     
     kobject_del(&root.kvblade_kobj);
     kobject_put(&root.kvblade_kobj);
+    
+    if (root.thread_percpu != NULL) {
+        free_percpu(root.thread_percpu);
+        root.thread_percpu = NULL;
+    }
 
     if (root.aoe_rq_cache != NULL) {
         kmem_cache_destroy(root.aoe_rq_cache);
