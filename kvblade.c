@@ -961,12 +961,12 @@ static int kthread(void* data) {
         __set_current_state(TASK_RUNNING);
         do {
             
-            preempty_disable();
+            preempt_disable();
             if ((iskb = skb_dequeue(&t->skb_inq)))
                 ktrcv(t, iskb);
             if ((oskb = skb_dequeue(&t->skb_outq)))
                 dev_queue_xmit(oskb);
-            preempty_disable();
+            preempt_enable();
             
         } while (iskb || oskb);
         
