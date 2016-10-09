@@ -253,7 +253,6 @@ static ssize_t kvblade_announce_all(void) {
     struct aoethread* t;
     struct aoedev *d, *d2;
     struct sk_buff* skb;
-    int cpu;
     
     spin_lock(&root.lock);    
     rcu_read_lock();
