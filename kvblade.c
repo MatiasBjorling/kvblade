@@ -246,7 +246,9 @@ static void kvblade_announce(struct aoedev *d, struct aoethread* t, struct sk_bu
         cfg->cslen = cpu_to_be16(d->nconfig);
         memcpy(cfg->data, d->config, d->nconfig);
     }
-    __skb_queue_tail(&t->skb_outq_fast, skb);
+    
+    //__skb_queue_tail(&t->skb_outq_fast, skb);
+    skb_queue_tail(&t->skb_outq, skb);
 }
 
 static ssize_t kvblade_announce_all(void) {    
@@ -939,7 +941,8 @@ static int rcv(struct sk_buff *skb, struct net_device *ndev, struct packet_type 
     if (~aoe->verfl & AOEFL_RSP)
     {
         t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, get_cpu());
-        __skb_queue_tail(&t->skb_inq_fast, skb);
+        //__skb_queue_tail(&t->skb_inq_fast, skb);
+        skb_queue_tail(&t->skb_inq, skb);
         put_cpu();
         
         wake_up(&t->ktwaitq);
@@ -994,9 +997,10 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
         }
         
         if (rskb) {
-            preempt_disable();
-            __skb_queue_tail(&t->skb_outq_fast, rskb);
-            preempt_enable();
+            skb_queue_tail(&t->skb_outq, rskb);            
+            //preempt_disable();
+            //__skb_queue_tail(&t->skb_outq_fast, rskb);
+            //preempt_enable();
         }
 
         // If its a specific address then we are finished
