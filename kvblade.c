@@ -58,20 +58,29 @@ struct aoereq {
 } __attribute__((packed)) __attribute__((aligned(8))) typedef aoereq_t;
 
 struct aoedev {
-    struct kobject kobj;
-    struct aoedev *next;
-    struct net_device *netdev;
-    struct block_device *blkdev;
-    atomic_t busy;
-    unsigned char config[1024];
-    int nconfig;
-    int major;
-    int minor;
+    
+    // This next 64 bytes are aligned and packed together so that
+    // the driver keeps a single cache line hot per device
+    struct list_head        head;
+    __be16                  major;
+    __be16                  minor;
+    atomic_t                busy;
+    
+    struct kobject          kobj;
+    struct aoedev*          next;
+    
+    int                     nconfig;
+    loff_t                  scnt;
+    
+    struct net_device*      netdev;
+    struct block_device*    blkdev;
+    unsigned char           config[1024];   
 
-    char path[256];
-    loff_t scnt;
-    char model[ATA_MODEL_LEN];
-    char sn[ATA_ID_SERNO_LEN];
+    char                    path[256];
+    
+    char                    model[ATA_MODEL_LEN];
+    char                    sn[ATA_ID_SERNO_LEN];
+    
 } __attribute__((packed)) __attribute__((aligned(8))) typedef aoedev_t;
 
 struct kvblade_sysfs_entry {
@@ -80,14 +89,21 @@ struct kvblade_sysfs_entry {
     ssize_t(*store)(struct aoedev *, const char *, size_t);
 };
 
-static struct sk_buff_head skb_outq, skb_inq;
-static spinlock_t lock;
-static struct aoedev *devlist;
-static struct completion ktrendez;
-static struct task_struct *task;
-static wait_queue_head_t ktwaitq;
+struct core
+{
+    struct sk_buff_head skb_outq;
+    struct sk_buff_head skb_inq;
+    spinlock_t          lock;
+    struct aoedev*      devlist;
+    struct kmem_cache*  aoe_rq_cache;
+    
+    struct completion   ktrendez;    
+    wait_queue_head_t   ktwaitq;
+    struct task_struct* task;
+    
+} typedef core_t;
 
-static struct kmem_cache* aoe_rq_cache = NULL;
+static core_t root;
 
 static struct kobj_type kvblade_ktype;
 
@@ -187,8 +203,8 @@ static void kvblade_announce(struct aoedev *d) {
         cfg->cslen = cpu_to_be16(d->nconfig);
         memcpy(cfg->data, d->config, d->nconfig);
     }
-    skb_queue_tail(&skb_outq, skb);
-    wake_up(&ktwaitq);
+    skb_queue_tail(&root.skb_outq, skb);
+    wake_up(&root.ktwaitq);
 }
 
 static ssize_t kvblade_add(u32 major, u32 minor, char *ifname, char *path) {
@@ -217,14 +233,14 @@ static ssize_t kvblade_add(u32 major, u32 minor, char *ifname, char *path) {
         goto err;
     }
 
-    spin_lock(&lock);
+    spin_lock(&root.lock);
 
-    for (td = devlist; td; td = td->next)
+    for (td = root.devlist; td; td = td->next)
         if (td->major == major &&
                 td->minor == minor &&
                 td->netdev == nd) {
 
-            spin_unlock(&lock);
+            spin_unlock(&root.lock);
 
             printk(KERN_ERR "add failed: device %d.%d already exists on %s.\n",
                     major, minor, ifname);
@@ -253,9 +269,9 @@ static ssize_t kvblade_add(u32 major, u32 minor, char *ifname, char *path) {
 
     kobject_init_and_add(&d->kobj, &kvblade_ktype, &kvblade_kobj, "%d.%d@%s", major, minor, ifname);
 
-    d->next = devlist;
-    devlist = d;
-    spin_unlock(&lock);
+    d->next = root.devlist;
+    root.devlist = d;
+    spin_unlock(&root.lock);
 
     dprintk("added %s as %d.%d@%s: %Lu sectors.\n",
             path, major, minor, ifname, d->scnt);
@@ -270,9 +286,9 @@ static ssize_t kvblade_del(u32 major, u32 minor, char *ifname) {
     struct aoedev *d, **b;
     int ret;
 
-    b = &devlist;
-    d = devlist;
-    spin_lock(&lock);
+    b = &root.devlist;
+    d = root.devlist;
+    spin_lock(&root.lock);
 
     for (; d; b = &d->next, d = *b)
         if (d->major == major &&
@@ -294,7 +310,7 @@ static ssize_t kvblade_del(u32 major, u32 minor, char *ifname) {
 
     *b = d->next;
 
-    spin_unlock(&lock);
+    spin_unlock(&root.lock);
 
     blkdev_put(d->blkdev, FMODE_READ | FMODE_WRITE);
 
@@ -303,7 +319,7 @@ static ssize_t kvblade_del(u32 major, u32 minor, char *ifname) {
 
     return 0;
 err:
-    spin_unlock(&lock);
+    spin_unlock(&root.lock);
     return ret;
 }
 
@@ -548,13 +564,13 @@ static void ata_io_complete(struct bio *bio, int error) {
 
     bio_put(bio);
     rq->skb = NULL;
-    kmem_cache_free(aoe_rq_cache, rq);
+    kmem_cache_free(root.aoe_rq_cache, rq);
     atomic_dec(&d->busy);
 
     skb_trim(skb, len);
-    skb_queue_tail(&skb_outq, skb);
+    skb_queue_tail(&root.skb_outq, skb);
 
-    wake_up(&ktwaitq);
+    wake_up(&root.ktwaitq);
 }
 
 static inline loff_t readlba(u8 *lba) {
@@ -604,7 +620,7 @@ static struct sk_buff * ata(struct aoedev *d, struct sk_buff *skb, struct sk_buf
                 break;
             }
 
-            rq = (aoereq_t*) kmem_cache_alloc_node(aoe_rq_cache, GFP_ATOMIC, numa_node_id());
+            rq = (aoereq_t*) kmem_cache_alloc_node(root.aoe_rq_cache, GFP_ATOMIC, numa_node_id());
             if (unlikely(rq == NULL)) {
                 printk(KERN_ERR "failed to allocate request obj\n");
                 ata->cmdstat = ATA_ERR;
@@ -751,8 +767,8 @@ static int rcv(struct sk_buff *skb, struct net_device *ndev, struct packet_type 
 
     aoe = (struct aoe_hdr *) skb_mac_header(skb);
     if (~aoe->verfl & AOEFL_RSP) {
-        skb_queue_tail(&skb_inq, skb);
-        wake_up(&ktwaitq);
+        skb_queue_tail(&root.skb_inq, skb);
+        wake_up(&root.ktwaitq);
     } else {
         dev_kfree_skb(skb);
     }
@@ -770,8 +786,8 @@ static void ktrcv(struct sk_buff *skb) {
     major = be16_to_cpu(aoe->major);
     minor = aoe->minor;
 
-    spin_lock(&lock);
-    for (d = devlist; d; d = d->next) {
+    spin_lock(&root.lock);
+    for (d = root.devlist; d; d = d->next) {
         if ((major != d->major && major != 0xffff) ||
                 (minor != d->minor && minor != 0xff) ||
                 (skb->dev != d->netdev))
@@ -794,9 +810,9 @@ static void ktrcv(struct sk_buff *skb) {
         }
 
         if (rskb)
-            skb_queue_tail(&skb_outq, rskb);
+            skb_queue_tail(&root.skb_outq, rskb);
     }
-    spin_unlock(&lock);
+    spin_unlock(&root.lock);
 
     dev_kfree_skb(skb);
 }
@@ -813,22 +829,22 @@ static int kthread(void *errorparameternameomitted) {
     sigfillset(&blocked);
     sigprocmask(SIG_BLOCK, &blocked, NULL);
     flush_signals(current);
-    complete(&ktrendez);
+    complete(&root.ktrendez);
     do {
         __set_current_state(TASK_RUNNING);
         do {
-            if ((iskb = skb_dequeue(&skb_inq)))
+            if ((iskb = skb_dequeue(&root.skb_inq)))
                 ktrcv(iskb);
-            if ((oskb = skb_dequeue(&skb_outq)))
+            if ((oskb = skb_dequeue(&root.skb_outq)))
                 dev_queue_xmit(oskb);
         } while (iskb || oskb);
         set_current_state(TASK_INTERRUPTIBLE);
-        add_wait_queue(&ktwaitq, &wait);
+        add_wait_queue(&root.ktwaitq, &wait);
         schedule();
-        remove_wait_queue(&ktwaitq, &wait);
+        remove_wait_queue(&root.ktwaitq, &wait);
     } while (!kthread_should_stop());
     __set_current_state(TASK_RUNNING);
-    complete(&ktrendez);
+    complete(&root.ktrendez);
     return 0;
 }
 
@@ -838,25 +854,25 @@ static struct packet_type pt = {
 };
 
 static int __init kvblade_module_init(void) {
-    aoe_rq_cache = kmem_cache_create("aoe_rq_cache", sizeof (aoereq_t), sizeof (aoereq_t), SLAB_HWCACHE_ALIGN, NULL);
-    if (aoe_rq_cache == NULL) return -ENOMEM;
+    root.aoe_rq_cache = kmem_cache_create("aoe_rq_cache", sizeof (aoereq_t), sizeof (aoereq_t), SLAB_HWCACHE_ALIGN, NULL);
+    if (root.aoe_rq_cache == NULL) return -ENOMEM;
 
-    skb_queue_head_init(&skb_outq);
-    skb_queue_head_init(&skb_inq);
+    skb_queue_head_init(&root.skb_outq);
+    skb_queue_head_init(&root.skb_inq);
 
-    spin_lock_init(&lock);
+    spin_lock_init(&root.lock);
 
-    init_completion(&ktrendez);
-    init_waitqueue_head(&ktwaitq);
+    init_completion(&root.ktrendez);
+    init_waitqueue_head(&root.ktwaitq);
 
-    task = kthread_run(kthread, NULL, "kvblade");
-    if (task == NULL || IS_ERR(task))
+    root.task = kthread_run(kthread, NULL, "kvblade");
+    if (root.task == NULL || IS_ERR(root.task))
         return -EAGAIN;
 
     kobject_init_and_add(&kvblade_kobj, &kvblade_ktype_ops, NULL, "kvblade");
 
-    wait_for_completion(&ktrendez);
-    init_completion(&ktrendez); // for exit
+    wait_for_completion(&root.ktrendez);
+    init_completion(&root.ktrendez); // for exit
 
     dev_add_pack(&pt);
     return 0;
@@ -866,10 +882,12 @@ static __exit void kvblade_module_exit(void) {
     struct aoedev *d, *nd;
 
     dev_remove_pack(&pt);
-    spin_lock(&lock);
-    d = devlist;
-    devlist = NULL;
-    spin_unlock(&lock);
+    
+    spin_lock(&root.lock);
+    d = root.devlist;
+    root.devlist = NULL;
+    spin_unlock(&root.lock);
+    
     for (; d; d = nd) {
         nd = d->next;
         while (atomic_read(&d->busy))
@@ -879,17 +897,17 @@ static __exit void kvblade_module_exit(void) {
         kobject_del(&d->kobj);
         kobject_put(&d->kobj);
     }
-    kthread_stop(task);
-    wait_for_completion(&ktrendez);
-    skb_queue_purge(&skb_outq);
-    skb_queue_purge(&skb_inq);
+    kthread_stop(root.task);
+    wait_for_completion(&root.ktrendez);
+    skb_queue_purge(&root.skb_outq);
+    skb_queue_purge(&root.skb_inq);
 
     kobject_del(&kvblade_kobj);
     kobject_put(&kvblade_kobj);
 
-    if (aoe_rq_cache != NULL) {
-        kmem_cache_destroy(aoe_rq_cache);
-        aoe_rq_cache = NULL;
+    if (root.aoe_rq_cache != NULL) {
+        kmem_cache_destroy(root.aoe_rq_cache);
+        root.aoe_rq_cache = NULL;
     }
 }
 
