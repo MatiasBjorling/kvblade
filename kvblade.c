@@ -26,6 +26,8 @@
 #define nelem(A) (sizeof (A) / sizeof (A)[0])
 #define MAXSECTORS(mtu) (((mtu) - sizeof (struct aoe_hdr) - sizeof (struct aoe_atahdr)) / 512)
 
+#define MAXBUFFERS  512
+
 #if LINUX_VERSION_CODE <= KERNEL_VERSION(3,14,0)
 #define bio_sector(bio)	((bio)->bi_sector)
 #define bio_size(bio) ((bio)->bi_size)
@@ -52,14 +54,13 @@ struct aoereq {
 	struct bio *bio;
 	struct sk_buff *skb;
 	struct aoedev *d;	/* blech.  I'm blind to a cleaner solution. */
-};
+} __attribute__((packed)) __attribute__((aligned(8))) typedef aoereq_t;
 
 struct aoedev {
 	struct kobject kobj;
 	struct aoedev *next;
 	struct net_device *netdev;
 	struct block_device *blkdev;
-	struct aoereq reqs[16];
 	atomic_t busy;
 	unsigned char config[1024];
 	int nconfig;
@@ -70,7 +71,7 @@ struct aoedev {
 	loff_t scnt;
 	char model[ATA_MODEL_LEN];
 	char sn[ATA_ID_SERNO_LEN];
-};
+} __attribute__((packed)) __attribute__((aligned(8))) typedef aoedev_t;
 
 struct kvblade_sysfs_entry {
 	struct attribute attr;
@@ -84,6 +85,8 @@ static struct aoedev *devlist;
 static struct completion ktrendez;
 static struct task_struct *task;
 static wait_queue_head_t ktwaitq;
+
+static struct kmem_cache* aoe_rq_cache = NULL;
 
 static struct kobj_type kvblade_ktype;
 
@@ -130,8 +133,6 @@ static struct sk_buff * skb_new(struct net_device *dev, ulong len)
 
 	skb = alloc_skb(len, GFP_ATOMIC);
 	if (skb) {
-		memset(skb->data, 0, len);
-
 		skb_reset_network_header(skb);
 		skb_reset_mac_header(skb);
 		skb->dev = dev;
@@ -183,7 +184,7 @@ static void kvblade_announce(struct aoedev *d)
 	aoe->cmd = AOECMD_CFG;
 
 	memset(cfg, 0, sizeof *cfg);
-	cfg->bufcnt = cpu_to_be16(nelem(d->reqs));
+	cfg->bufcnt = cpu_to_be16(MAXBUFFERS);
 	cfg->fwver = __constant_htons(0x0002);
 	cfg->scnt = MAXSECTORS(d->netdev->mtu);
 	cfg->aoeccmd = AOE_HVER;
@@ -571,7 +572,8 @@ static void ata_io_complete(struct bio *bio, int error)
 	}
 
 	bio_put(bio);
-	rq->skb = NULL;
+        rq->skb = NULL;
+        kmem_cache_free(aoe_rq_cache, rq);
 	atomic_dec(&d->busy);
 
 	skb_trim(skb, len);
@@ -592,7 +594,7 @@ static inline loff_t readlba(u8 *lba)
 	return n;
 }
 
-static struct sk_buff * ata(struct aoedev *d, struct sk_buff *skb)
+static struct sk_buff * ata(struct aoedev *d, struct sk_buff *skb, struct sk_buff *rcv)
 {
 	struct aoe_hdr *aoe;
 	struct aoe_atahdr *ata;
@@ -628,14 +630,15 @@ static struct sk_buff * ata(struct aoedev *d, struct sk_buff *skb)
 			ata->errfeat = ATA_IDNF;
 			break;
 		}
-		rq = d->reqs;
-		e = rq + nelem(d->reqs);
-		for (; rq<e; rq++)
-			if (rq->skb == NULL)
-				break;
-		if (rq == e)
-			goto drop;
-		
+        
+                rq = (aoereq_t*)kmem_cache_alloc_node(aoe_rq_cache, GFP_ATOMIC, numa_node_id());
+                if (unlikely(rq == NULL)) {
+                    printk(KERN_ERR "failed to allocate request obj\n");
+                    ata->cmdstat = ATA_ERR;
+                    ata->errfeat = ATA_ABORTED;
+                    break;
+                }
+                
 		bio = bio_alloc(GFP_ATOMIC, 1);
 		if (bio == NULL) {
 			eprintk("can't alloc bio\n");
@@ -682,7 +685,7 @@ drop:
 	return NULL;
 }
 
-static struct sk_buff* cfg(struct aoedev *d, struct sk_buff *skb)
+static struct sk_buff* cfg(struct aoedev *d, struct sk_buff *skb, struct sk_buff *rcv)
 {
 	struct aoe_hdr *aoe;
 	struct aoe_cfghdr *cfg;
@@ -694,7 +697,7 @@ static struct sk_buff* cfg(struct aoedev *d, struct sk_buff *skb)
 	ccmd = cfg->aoeccmd & 0xf;
 	len = sizeof *aoe;
 
-	cfg->bufcnt = htons(nelem(d->reqs));
+	cfg->bufcnt = htons(MAXBUFFERS);
 	cfg->scnt = MAXSECTORS(d->netdev->mtu);
 	cfg->fwver = __constant_htons(0x0002);
 	cfg->aoeccmd = AOE_HVER;
@@ -811,10 +814,10 @@ static void ktrcv(struct sk_buff *skb)
 
 		switch (aoe->cmd) {
 		case AOECMD_ATA:
-			rskb = ata(d, rskb);
+			rskb = ata(d, rskb, skb);
 			break;
 		case AOECMD_CFG:
-			rskb = cfg(d, rskb);
+			rskb = cfg(d, rskb, skb);
 			break;
 		default:
 			dev_kfree_skb(rskb);
@@ -868,6 +871,9 @@ static struct packet_type pt = {
 
 static int __init kvblade_module_init(void)
 {
+        aoe_rq_cache = kmem_cache_create("aoe_rq_cache", sizeof(aoereq), sizeof(aoereq), SLAB_HWCACHE_ALIGN, NULL);
+        if (aoe_rq_cache == NULL) return -ENOMEM;
+    
 	skb_queue_head_init(&skb_outq);
 	skb_queue_head_init(&skb_inq);
 	
@@ -915,6 +921,12 @@ static __exit void kvblade_module_exit(void)
 	
 	kobject_del(&kvblade_kobj);
 	kobject_put(&kvblade_kobj);
+        
+        if (aoe_rq_cache != NULL) {
+            kmem_cache_destroy(aoe_rq_cache);
+            aoe_rq_cache = NULL;
+        }
+    }
 }
 
 module_init(kvblade_module_init);
