@@ -543,6 +543,7 @@ static struct attribute *kvblade_ktype_attrs[] = {
 static struct attribute *kvblade_ktype_ops_attrs[] = {
     &kvblade_sysfs_add.attr,
     &kvblade_sysfs_del.attr,
+    &kvblade_sysfs_announce.attr,
     NULL,
 };
 
