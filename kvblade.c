@@ -94,7 +94,7 @@ static void kvblade_release(struct kobject *kobj)
 static ssize_t kvblade_get_capacity(struct block_device *bd)
 {
     if (bd->bd_part != NULL)
-        return bd->bd_part->nr_sects * KERNEL_SECTOR_SIZE;    
+        return bd->bd_part->nr_sects;
     return get_capacity(bd->bd_disk);
 }
 
