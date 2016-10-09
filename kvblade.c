@@ -947,8 +947,8 @@ static __exit void kvblade_module_exit(void) {
     
     spin_lock(&root.lock);
     rcu_read_lock();
-    d = hlist_first_rcu(&root.devlist);
-    rcu_assign_pointer(root.devlist.first, NULL);
+    d = hlist_entry_safe(rcu_dereference_raw_notrace(hlist_first_rcu(&root.devlist)), aoedev_t, node);
+    rcu_assign_pointer(hlist_first_rcu(&root.devlist), NULL);
     rcu_read_unlock();
     spin_unlock(&root.lock);
     
