@@ -55,6 +55,7 @@ struct aoereq {
     struct aoedev *d;       // Reference to the device that the request will be actioned on
     struct aoethread* t;    // Reference to the thread thats processing this command
     struct aoedev_thread* dt;   // Reference to the structure used for data that relates to both the device and the thread
+    int err;
     
     struct bio bio;         // The BIO structure is cached in the AOE request to minimize the calls to memory allocation
     struct bio_vec bvl[MAXIOVECS];  // These must be placed together as the BIO implementation requires it
@@ -105,6 +106,7 @@ struct aoethread {
 
     struct sk_buff_head skb_outq;
     struct sk_buff_head skb_inq;
+    struct sk_buff_head skb_com;
     atomic_t            announce_all;
     
     struct completion   ktrendez;
@@ -638,25 +640,46 @@ static int ata_identify(struct aoedev *d, struct aoe_atahdr *ata) {
 }
 
 static void ata_io_complete(struct bio *bio, int error) {
-    struct aoereq *rq;
+    struct aoethread *t;
+    struct aoereq *rq, **prq;
+    struct sk_buff *skb;
+    
+    rq = bio->bi_private;
+    rq->err = error;
+    skb = rq->skb;
+    
+    prq = (struct aoereq **rq)(&skb->cb[0]);
+    *prq = rq;
+    
+    t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, get_cpu());
+    skb_queue_tail(&t->skb_com, skb);
+    put_cpu();
+}
+
+static void ktcom(struct aoethread* t, struct sk_buff *skb) {
+    struct aoereq *rq, **prq;
     struct aoedev *d;
     struct aoethread *t;
+    struct aoethread *me;
     struct aoedev_thread *dt;
-    struct sk_buff *skb;
     struct aoe_hdr *aoe;
     struct aoe_atahdr *ata;
+    struct bio *bio;
     int len;
+    int error;
     unsigned int bytes = 0;
-
+    
+    prq = (struct aoereq **rq)(&skb->cb[0]);
+    rq = *prq;
+    bio = &rq->bio;
+    error = rq->err;
+    
     if (!error)
         bytes = bio->bi_io_vec[0].bv_len;
 
-    rq = bio->bi_private;
     d = rq->d;
-    t = rq->t;
     dt = rq->dt;
-    skb = rq->skb;
-
+    
     aoe = (struct aoe_hdr *) skb_mac_header(skb);
     ata = (struct aoe_atahdr *) aoe->data;
 
@@ -993,7 +1016,7 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
 }
 
 static int kthread(void* data) {
-    struct sk_buff *iskb, *oskb;
+    struct sk_buff *iskb, *oskb, *cskb;
     struct aoethread* t = (struct aoethread*)data;
     
     DECLARE_WAITQUEUE(wait, current);
@@ -1001,6 +1024,7 @@ static int kthread(void* data) {
     
     skb_queue_head_init(&t->skb_outq);
     skb_queue_head_init(&t->skb_inq);
+    skb_queue_head_init(&t->skb_com);
 
 #ifdef PF_NOFREEZE
     current->flags |= PF_NOFREEZE;
@@ -1019,10 +1043,12 @@ static int kthread(void* data) {
         do {
             if ((iskb = skb_dequeue(&t->skb_inq)))
                 ktrcv(t, iskb);
+            if ((cskb = skb_dequeue(&t->skb_com)))
+                ktcom(t, cskb);
             if ((oskb = skb_dequeue(&t->skb_outq)))
                 dev_queue_xmit(oskb);
             
-        } while (iskb || oskb);
+        } while (iskb || cskb || oskb);
     
         if (atomic_xchg(&t->announce_all, 0) > 0) {
             ktannounce(t);
@@ -1038,6 +1064,7 @@ static int kthread(void* data) {
     
     skb_queue_purge(&t->skb_outq);
     skb_queue_purge(&t->skb_inq);
+    skb_queue_purge(&t->skb_com);
     
     printk(KERN_INFO "tokmodule: Stopped a kvblade thread (%d)\n", smp_processor_id());
     
