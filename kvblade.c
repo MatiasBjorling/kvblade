@@ -1043,7 +1043,7 @@ static int __init kvblade_module_init(void) {
         init_completion(&t->ktrendez);
         init_waitqueue_head(&t->ktwaitq);
 
-        t->task = kthread_create(kthread, worker, "kvblade(%d)", n);
+        t->task = kthread_create(kthread, t, "kvblade(%d)", n);
         if (t->task == NULL || IS_ERR(t->task))
             return -EAGAIN;
         tok_wake_up_process(t->task);
