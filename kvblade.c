@@ -59,7 +59,6 @@ struct aoereq {
     
     struct bio bio;         // The BIO structure is cached in the AOE request to minimize the calls to memory allocation
     struct bio_vec bvl[MAXIOVECS];  // These must be placed together as the BIO implementation requires it
-    
 } __attribute__((packed)) __attribute__((aligned(SMP_CACHE_BYTES))) typedef aoereq_t;
 
 struct aoedev_thread {
@@ -746,15 +745,45 @@ static struct sk_buff * ata(struct aoedev *d, struct aoethread *t, struct sk_buf
             bio->bi_bdev = d->blkdev;
             bio->bi_end_io = ata_io_complete;
             bio->bi_private = rq;
+            
+            if (rw == WRITE)
+            {
+                struct scatterlist sgt[MAXIOVECS];
+                struct scatterlist* sg;
+                int sg_n;
+                int i;
+                
+                sg_init_table(sgt, MAXIOVECS);
+                sg_n = skb_to_sgvec_nomark(sin, sgt, sizeof(struct aoe_hdr), ata->scnt << 9);
+                if (rq->sg_n <= 0) {
+                    kmem_cache_free(root.aoe_rq_cache, rq);
+                    printk(KERN_ERR "Can't bio_add_page for %d sectors (skb_to_sgvec_nomark)\n", ata->scnt);
+                    goto drop;
+                }
+                
+                for_each_sg(sgt, sg, sg_n, i) {
+                    page = sg_page(sg);
+                    bcnt = sg->length;
+                    offset = sg->offset;
+                    
+                    if (bio_add_page(bio, page, bcnt, offset) < bcnt) {
+                        kmem_cache_free(root.aoe_rq_cache, rq);
+                        printk(KERN_ERR "Can't bio_add_page for %d sectors (bio_add_page)\n", ata->scnt);
+                        goto drop;
+                    }
+                }
+            }
+            else
+            {
+                page = virt_to_page(ata->data);
+                bcnt = ata->scnt << 9;
+                offset = offset_in_page(ata->data);
 
-            page = virt_to_page(ata->data);
-            bcnt = ata->scnt << 9;
-            offset = offset_in_page(ata->data);
-
-            if (bio_add_page(bio, page, bcnt, offset) < bcnt) {
-                kmem_cache_free(root.aoe_rq_cache, rq);
-                printk(KERN_ERR "Can't bio_add_page for %d sectors\n", ata->scnt);
-                goto drop;
+                if (bio_add_page(bio, page, bcnt, offset) < bcnt) {
+                    kmem_cache_free(root.aoe_rq_cache, rq);
+                    printk(KERN_ERR "Can't bio_add_page for %d sectors\n", ata->scnt);
+                    goto drop;
+                }
             }
 
             rq->skb = skb;
@@ -849,8 +878,7 @@ static struct sk_buff* make_response(struct sk_buff *skb, struct aoe_hdr *aoe, i
         return NULL;
     
     aoe = (struct aoe_hdr *) skb_mac_header(rskb);
-    //skb_copy_bits(skb, 0, aoe, sizeof(struct aoe_hdr));
-    skb_copy_bits(skb, 0, aoe, skb->len);
+    skb_copy_bits(skb, 0, aoe, sizeof(struct aoe_hdr));
     memcpy(aoe->dst, aoe->src, ETH_ALEN);
     memcpy(aoe->src, skb->dev->dev_addr, ETH_ALEN);
     aoe->type = __constant_htons(ETH_P_AOE);
