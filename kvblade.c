@@ -925,7 +925,6 @@ static __exit void kvblade_module_exit(void)
             kmem_cache_destroy(aoe_rq_cache);
             aoe_rq_cache = NULL;
         }
-    }
 }
 
 module_init(kvblade_module_init);
