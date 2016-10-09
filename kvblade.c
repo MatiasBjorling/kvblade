@@ -245,7 +245,6 @@ static void kvblade_announce(struct aoedev *d, struct aoethread* t) {
 static ssize_t kvblade_announce_all(void) {    
     struct aoethread* t;
     struct aoedev *d;
-    int n;
     int cpu;
     
     cpu = get_cpu();
@@ -471,7 +470,6 @@ static struct kvblade_sysfs_entry kvblade_sysfs_del = __ATTR(del, 0644, NULL, st
 
 static ssize_t store_announce(struct aoedev *dev, const char *page, size_t len) {
     int error = 0;
-    char *argv[16];
     char *p;
 
     p = kmalloc(len + 1, GFP_KERNEL);
@@ -484,7 +482,7 @@ static ssize_t store_announce(struct aoedev *dev, const char *page, size_t len) 
     return error ? error : len;
 }
 
-static struct kvblade_sysfs_entry kvblade_sysfs_announce = __ATTR(announce, 0644, NULL, store_annouce);
+static struct kvblade_sysfs_entry kvblade_sysfs_announce = __ATTR(announce, 0644, NULL, store_announce);
 
 static ssize_t show_scnt(struct aoedev *dev, char *page) {
     return sprintf(page, "%Ld\n", dev->scnt);
