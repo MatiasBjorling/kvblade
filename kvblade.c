@@ -26,8 +26,9 @@
 #define nelem(A) (sizeof (A) / sizeof (A)[0])
 
 #define MAXSECTORS(mtu) (((mtu) - sizeof (struct aoe_hdr) - sizeof (struct aoe_atahdr)) / 512)
-#define MAXBUFFERS  512
+#define MAXBUFFERS  1024
 #define MAXIOVECS 16
+#define KSPIN 128
 
 #if LINUX_VERSION_CODE <= KERNEL_VERSION(3,14,0)
 #define bio_sector(bio) ((bio)->bi_sector)
@@ -630,13 +631,7 @@ static void ata_io_complete(struct bio *bio, int error) {
     
     rq = bio->bi_private;
     d = rq->d;
-    
-    cpu = get_cpu();
-    t = (struct aoethread*) per_cpu_ptr(root.thread_percpu, cpu);
-    if (rq->t != t) {
-        rq->t = t;
-        rq->dt = (struct aoedev_thread*)per_cpu_ptr(d->devthread_percpu, cpu);
-    }
+    t = rq->t;
     dt = rq->dt;
     skb = rq->skb;
 
@@ -669,7 +664,6 @@ static void ata_io_complete(struct bio *bio, int error) {
     skb_queue_tail(&t->skb_outq, skb);
 
     wake_up(&t->ktwaitq);
-    put_cpu();
 }
 
 static inline loff_t readlba(u8 *lba) {
@@ -975,6 +969,7 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
 static int kthread(void* data) {
     struct sk_buff *iskb, *oskb;
     struct aoethread* t = (struct aoethread*) data;
+    int idle = 0;
 
     DECLARE_WAITQUEUE(wait, current);
     sigset_t blocked;
@@ -985,7 +980,7 @@ static int kthread(void* data) {
 #ifdef PF_NOFREEZE
     current->flags |= PF_NOFREEZE;
 #endif
-    set_user_nice(current, -20);
+    set_user_nice(current, -5);
     sigfillset(&blocked);
     sigprocmask(SIG_BLOCK, &blocked, NULL);
     flush_signals(current);
@@ -993,18 +988,32 @@ static int kthread(void* data) {
 
     printk(KERN_INFO "tokmodule: Started a new kvblade thread (%d)\n", smp_processor_id());
 
+    __set_current_state(TASK_RUNNING);
     do {
-        __set_current_state(TASK_RUNNING);
         do {
+            idle++;
             if ((iskb = skb_dequeue(&t->skb_inq)))
+            {
                 ktrcv(t, iskb);
+                idle = 0;
+            }
             if ((oskb = skb_dequeue(&t->skb_outq)))
+            {
                 dev_queue_xmit(oskb);
+                idle = 0;
+            }
         } while (iskb || oskb);
-        set_current_state(TASK_INTERRUPTIBLE);
-        add_wait_queue(&t->ktwaitq, &wait);
-        schedule();
-        remove_wait_queue(&t->ktwaitq, &wait);
+        
+        if (idle <= KSPIN)
+            schedule();
+        else
+        {
+            set_current_state(TASK_INTERRUPTIBLE);
+            add_wait_queue(&t->ktwaitq, &wait);
+            schedule();
+            remove_wait_queue(&t->ktwaitq, &wait);
+            __set_current_state(TASK_RUNNING);
+        }        
     } while (!kthread_should_stop());
 
     skb_queue_purge(&t->skb_outq);
