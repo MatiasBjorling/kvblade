@@ -89,17 +89,24 @@ struct kvblade_sysfs_entry {
     ssize_t(*store)(struct aoedev *, const char *, size_t);
 };
 
-struct core
-{
+struct aoethread {
+    
     struct sk_buff_head skb_outq;
     struct sk_buff_head skb_inq;
-    spinlock_t          lock;
-    struct aoedev*      devlist;
-    struct kmem_cache*  aoe_rq_cache;
     
     struct completion   ktrendez;    
     wait_queue_head_t   ktwaitq;
     struct task_struct* task;
+    
+} __attribute__((packed)) __attribute__((aligned(8))) typedef aoethread_t;
+
+struct core
+{
+    spinlock_t          lock;
+    struct aoedev*      devlist;
+    struct kmem_cache*  aoe_rq_cache;
+    
+    struct aoethread    thread;
     
 } typedef core_t;
 
@@ -203,8 +210,8 @@ static void kvblade_announce(struct aoedev *d) {
         cfg->cslen = cpu_to_be16(d->nconfig);
         memcpy(cfg->data, d->config, d->nconfig);
     }
-    skb_queue_tail(&root.skb_outq, skb);
-    wake_up(&root.ktwaitq);
+    skb_queue_tail(&root.thread.skb_outq, skb);
+    wake_up(&root.thread.ktwaitq);
 }
 
 static ssize_t kvblade_add(u32 major, u32 minor, char *ifname, char *path) {
@@ -568,9 +575,9 @@ static void ata_io_complete(struct bio *bio, int error) {
     atomic_dec(&d->busy);
 
     skb_trim(skb, len);
-    skb_queue_tail(&root.skb_outq, skb);
+    skb_queue_tail(&root.thread.skb_outq, skb);
 
-    wake_up(&root.ktwaitq);
+    wake_up(&root.thread.ktwaitq);
 }
 
 static inline loff_t readlba(u8 *lba) {
@@ -767,8 +774,8 @@ static int rcv(struct sk_buff *skb, struct net_device *ndev, struct packet_type 
 
     aoe = (struct aoe_hdr *) skb_mac_header(skb);
     if (~aoe->verfl & AOEFL_RSP) {
-        skb_queue_tail(&root.skb_inq, skb);
-        wake_up(&root.ktwaitq);
+        skb_queue_tail(&root.thread.skb_inq, skb);
+        wake_up(&root.thread.ktwaitq);
     } else {
         dev_kfree_skb(skb);
     }
@@ -810,7 +817,7 @@ static void ktrcv(struct sk_buff *skb) {
         }
 
         if (rskb)
-            skb_queue_tail(&root.skb_outq, rskb);
+            skb_queue_tail(&root.thread.skb_outq, rskb);
     }
     spin_unlock(&root.lock);
 
@@ -829,22 +836,22 @@ static int kthread(void *errorparameternameomitted) {
     sigfillset(&blocked);
     sigprocmask(SIG_BLOCK, &blocked, NULL);
     flush_signals(current);
-    complete(&root.ktrendez);
+    complete(&root.thread.ktrendez);
     do {
         __set_current_state(TASK_RUNNING);
         do {
-            if ((iskb = skb_dequeue(&root.skb_inq)))
+            if ((iskb = skb_dequeue(&root.thread.skb_inq)))
                 ktrcv(iskb);
-            if ((oskb = skb_dequeue(&root.skb_outq)))
+            if ((oskb = skb_dequeue(&root.thread.skb_outq)))
                 dev_queue_xmit(oskb);
         } while (iskb || oskb);
         set_current_state(TASK_INTERRUPTIBLE);
-        add_wait_queue(&root.ktwaitq, &wait);
+        add_wait_queue(&root.thread.ktwaitq, &wait);
         schedule();
-        remove_wait_queue(&root.ktwaitq, &wait);
+        remove_wait_queue(&root.thread.ktwaitq, &wait);
     } while (!kthread_should_stop());
     __set_current_state(TASK_RUNNING);
-    complete(&root.ktrendez);
+    complete(&root.thread.ktrendez);
     return 0;
 }
 
@@ -857,22 +864,22 @@ static int __init kvblade_module_init(void) {
     root.aoe_rq_cache = kmem_cache_create("aoe_rq_cache", sizeof (aoereq_t), sizeof (aoereq_t), SLAB_HWCACHE_ALIGN, NULL);
     if (root.aoe_rq_cache == NULL) return -ENOMEM;
 
-    skb_queue_head_init(&root.skb_outq);
-    skb_queue_head_init(&root.skb_inq);
+    skb_queue_head_init(&root.thread.skb_outq);
+    skb_queue_head_init(&root.thread.skb_inq);
 
     spin_lock_init(&root.lock);
 
-    init_completion(&root.ktrendez);
-    init_waitqueue_head(&root.ktwaitq);
+    init_completion(&root.thread.ktrendez);
+    init_waitqueue_head(&root.thread.ktwaitq);
 
-    root.task = kthread_run(kthread, NULL, "kvblade");
-    if (root.task == NULL || IS_ERR(root.task))
+    root.thread.task = kthread_run(kthread, NULL, "kvblade");
+    if (root.thread.task == NULL || IS_ERR(root.thread.task))
         return -EAGAIN;
 
     kobject_init_and_add(&kvblade_kobj, &kvblade_ktype_ops, NULL, "kvblade");
 
-    wait_for_completion(&root.ktrendez);
-    init_completion(&root.ktrendez); // for exit
+    wait_for_completion(&root.thread.ktrendez);
+    init_completion(&root.thread.ktrendez); // for exit
 
     dev_add_pack(&pt);
     return 0;
@@ -897,10 +904,10 @@ static __exit void kvblade_module_exit(void) {
         kobject_del(&d->kobj);
         kobject_put(&d->kobj);
     }
-    kthread_stop(root.task);
-    wait_for_completion(&root.ktrendez);
-    skb_queue_purge(&root.skb_outq);
-    skb_queue_purge(&root.skb_inq);
+    kthread_stop(root.thread.task);
+    wait_for_completion(&root.thread.ktrendez);
+    skb_queue_purge(&root.thread.skb_outq);
+    skb_queue_purge(&root.thread.skb_inq);
 
     kobject_del(&kvblade_kobj);
     kobject_put(&kvblade_kobj);
