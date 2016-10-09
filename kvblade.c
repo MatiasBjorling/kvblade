@@ -835,7 +835,7 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
 
 static int kthread(void* data) {
     struct sk_buff *iskb, *oskb;
-    struct aoethread* t = (struct aoethread* t)data;
+    struct aoethread* t = (struct aoethread*)data;
     
     DECLARE_WAITQUEUE(wait, current);
     sigset_t blocked;
