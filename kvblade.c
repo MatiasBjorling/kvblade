@@ -242,6 +242,25 @@ static void kvblade_announce(struct aoedev *d, struct aoethread* t) {
     wake_up(&t->ktwaitq);
 }
 
+static ssize_t kvblade_announce_all(void) {    
+    struct aoethread* t;
+    struct aoedev *d
+    int n;
+    int cpu;
+    
+    cpu = get_cpu();
+    rcu_read_lock();
+    hlist_for_each_entry_rcu_notrace(d, &root.devlist, node)
+    {
+        t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, cpu);
+        kvblade_announce(d, t);
+    }
+    rcu_read_unlock();
+    put_cpu();
+    
+    return 0;
+}
+
 static ssize_t kvblade_add(u32 major, u32 minor, char *ifname, char *path) {
     struct net_device *nd;
     struct block_device *bd;
@@ -449,6 +468,23 @@ static ssize_t store_del(struct aoedev *dev, const char *page, size_t len) {
 }
 
 static struct kvblade_sysfs_entry kvblade_sysfs_del = __ATTR(del, 0644, NULL, store_del);
+
+static ssize_t store_announce(struct aoedev *dev, const char *page, size_t len) {
+    int error = 0;
+    char *argv[16];
+    char *p;
+
+    p = kmalloc(len + 1, GFP_KERNEL);
+    memcpy(p, page, len);
+    p[len] = '\0';
+
+    error = kvblade_announce_all();
+
+    kfree(p);
+    return error ? error : len;
+}
+
+static struct kvblade_sysfs_entry kvblade_sysfs_announce = __ATTR(announce, 0644, NULL, store_annouce);
 
 static ssize_t show_scnt(struct aoedev *dev, char *page) {
     return sprintf(page, "%Ld\n", dev->scnt);
