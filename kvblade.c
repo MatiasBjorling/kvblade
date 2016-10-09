@@ -24,9 +24,10 @@
 #define dprintk(fmt, arg...) if(0);else xprintk(KERN_DEBUG, fmt, ## arg)
 
 #define nelem(A) (sizeof (A) / sizeof (A)[0])
-#define MAXSECTORS(mtu) (((mtu) - sizeof (struct aoe_hdr) - sizeof (struct aoe_atahdr)) / 512)
 
+#define MAXSECTORS(mtu) (((mtu) - sizeof (struct aoe_hdr) - sizeof (struct aoe_atahdr)) / 512)
 #define MAXBUFFERS  512
+#define MAXIOVECS 16
 
 #if LINUX_VERSION_CODE <= KERNEL_VERSION(3,14,0)
 #define bio_sector(bio) ((bio)->bi_sector)
@@ -50,11 +51,14 @@ enum {
 struct aoedev;
 
 struct aoereq {
-    struct bio *bio;        // Reference to the IO that is the actual request
     struct sk_buff *skb;    // Reference to the packet that initiated the request
     struct aoedev *d;       // Reference to the device that the request will be actioned on
     struct aoethread* t;    // Reference to the thread thats processing this command
     struct aoedev_thread* dt;   // Reference to the structure used for data that relates to both the device and the thread
+    
+    struct bio bio;         // The BIO structure is cached in the AOE request to minimize the calls to memory allocation
+    struct bio_vec bvl[MAXIOVECS];  // These must be placed together as the BIO implementation requires it
+    
 } __attribute__((packed)) __attribute__((aligned(8))) typedef aoereq_t;
 
 struct aoedev_thread {
@@ -649,7 +653,6 @@ static void ata_io_complete(struct bio *bio, int error) {
         ata->errfeat = ATA_UNC | ATA_ABORTED;
     }
 
-    bio_put(bio);
     rq->skb = NULL;
     kmem_cache_free(root.aoe_rq_cache, rq);
     dt->busy--;
@@ -716,12 +719,11 @@ static struct sk_buff * ata(struct aoedev *d, struct aoethread *t, struct sk_buf
                 break;
             }
 
-            bio = bio_alloc(GFP_ATOMIC, 1);
-            if (bio == NULL) {
-                eprintk("can't alloc bio\n");
-                goto drop;
-            }
-            rq->bio = bio;
+            bio = &rq->bio;
+            bio_init(bio);
+            bio->bi_max_vecs = MAXIOVECS;
+            bio->bi_io_vec = bio->bi_inline_vecs;
+            
             rq->d = d;
             rq->t = t;
             rq->dt = (struct aoedev_thread*)per_cpu_ptr(d->devthread_percpu, smp_processor_id());
@@ -736,8 +738,8 @@ static struct sk_buff * ata(struct aoedev *d, struct aoethread *t, struct sk_buf
             offset = offset_in_page(ata->data);
 
             if (bio_add_page(bio, page, bcnt, offset) < bcnt) {
+                kmem_cache_free(root.aoe_rq_cache, rq);
                 printk(KERN_ERR "Can't bio_add_page for %d sectors\n", ata->scnt);
-                bio_put(bio);
                 goto drop;
             }
 
