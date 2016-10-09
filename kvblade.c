@@ -623,13 +623,20 @@ static void ata_io_complete(struct bio *bio, int error) {
     struct aoe_atahdr *ata;
     int len;
     unsigned int bytes = 0;
+    int cpu;
 
     if (!error)
         bytes = bio->bi_io_vec[0].bv_len;
-
+    
     rq = bio->bi_private;
     d = rq->d;
-    t = rq->t;
+    
+    cpu = get_cpu();
+    t = (struct aoethread*) per_cpu_ptr(root.thread_percpu, cpu);
+    if (rq->t != t) {
+        rq->t = t;
+        rq->dt = (struct aoedev_thread*)per_cpu_ptr(d->devthread_percpu, cpu);
+    }
     dt = rq->dt;
     skb = rq->skb;
 
@@ -662,6 +669,7 @@ static void ata_io_complete(struct bio *bio, int error) {
     skb_queue_tail(&t->skb_outq, skb);
 
     wake_up(&t->ktwaitq);
+    put_cpu();
 }
 
 static inline loff_t readlba(u8 *lba) {
@@ -1035,9 +1043,10 @@ static int __init kvblade_module_init(void) {
         init_completion(&t->ktrendez);
         init_waitqueue_head(&t->ktwaitq);
 
-        t->task = kthread_run(kthread, t, "kvblade");
+        t->task = kthread_create(kthread, worker, "kvblade(%d)", n);
         if (t->task == NULL || IS_ERR(t->task))
             return -EAGAIN;
+        tok_wake_up_process(t->task);
     }
 
     kobject_init_and_add(&root.kvblade_kobj, &kvblade_ktype_ops, NULL, "kvblade");
