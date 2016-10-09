@@ -659,8 +659,6 @@ static void ata_io_complete(struct bio *bio, int error) {
 static void ktcom(struct aoethread* t, struct sk_buff *skb) {
     struct aoereq *rq, **prq;
     struct aoedev *d;
-    struct aoethread *t;
-    struct aoethread *me;
     struct aoedev_thread *dt;
     struct aoe_hdr *aoe;
     struct aoe_atahdr *ata;
