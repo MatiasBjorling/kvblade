@@ -36,6 +36,10 @@
 #define bio_idx(bio) ((bio)->bi_iter.bi_idx)
 #endif
 
+#ifndef KERNEL_SECTOR_SIZE
+#define KERNEL_SECTOR_SIZE 512
+#endif
+
 static struct kobject kvblade_kobj;
 
 enum {
