@@ -648,7 +648,7 @@ static void ata_io_complete(struct bio *bio, int error) {
     rq->err = error;
     skb = rq->skb;
     
-    prq = (struct aoereq **rq)(&skb->cb[0]);
+    prq = (struct aoereq **)(&skb->cb[0]);
     *prq = rq;
     
     t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, get_cpu());
@@ -669,7 +669,7 @@ static void ktcom(struct aoethread* t, struct sk_buff *skb) {
     int error;
     unsigned int bytes = 0;
     
-    prq = (struct aoereq **rq)(&skb->cb[0]);
+    prq = (struct aoereq **)(&skb->cb[0]);
     rq = *prq;
     bio = &rq->bio;
     error = rq->err;
