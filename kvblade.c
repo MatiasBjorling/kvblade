@@ -598,7 +598,7 @@ static struct sk_buff * ata(struct aoedev *d, struct sk_buff *skb, struct sk_buf
 {
 	struct aoe_hdr *aoe;
 	struct aoe_atahdr *ata;
-	struct aoereq *rq, *e;
+	struct aoereq *rq;
 	struct bio *bio;
 	sector_t lba;
 	int len, rw;
@@ -871,7 +871,7 @@ static struct packet_type pt = {
 
 static int __init kvblade_module_init(void)
 {
-        aoe_rq_cache = kmem_cache_create("aoe_rq_cache", sizeof(aoereq), sizeof(aoereq), SLAB_HWCACHE_ALIGN, NULL);
+        aoe_rq_cache = kmem_cache_create("aoe_rq_cache", sizeof(aoereq_t), sizeof(aoereq_t), SLAB_HWCACHE_ALIGN, NULL);
         if (aoe_rq_cache == NULL) return -ENOMEM;
     
 	skb_queue_head_init(&skb_outq);
@@ -899,7 +899,6 @@ static __exit void kvblade_module_exit(void)
 {
 	struct aoedev *d, *nd;
 
-	printk("Testing exiting\n");
 	dev_remove_pack(&pt);
 	spin_lock(&lock);
 	d = devlist;
