@@ -51,7 +51,8 @@ enum {
 struct aoedev;
 
 struct aoereq {
-    struct sk_buff *skb;    // Reference to the packet that initiated the request
+    struct sk_buff *skb;    // Reference to the packet that we will use for transmission
+    struct sk_buff *rcv;    // Reference to the packet that was received (or at least a clone of it)
     struct aoedev *d;       // Reference to the device that the request will be actioned on
     struct aoethread* t;    // Reference to the thread thats processing this command
     struct aoedev_thread* dt;   // Reference to the structure used for data that relates to both the device and the thread
@@ -654,6 +655,8 @@ static void ata_io_complete(struct bio *bio, int error) {
     }
 
     rq->skb = NULL;
+    consume_skb(rq->rcv);
+    rq->rcv = NULL;
     kmem_cache_free(root.aoe_rq_cache, rq);
     dt->busy--;
 
@@ -684,7 +687,7 @@ static struct bio* rq_init_bio(struct aoereq *rq)
     return bio;
 }
 
-static struct sk_buff * ata(struct aoedev *d, struct aoethread *t, struct sk_buff *skb) {
+static struct sk_buff * ata(struct aoedev *d, struct aoethread *t, struct sk_buff *skb, struct sk_buff *rcv) {
     struct aoe_hdr *aoe;
     struct aoe_atahdr *ata;
     struct aoereq *rq;
@@ -736,7 +739,7 @@ static struct sk_buff * ata(struct aoedev *d, struct aoethread *t, struct sk_buf
             rq->d = d;
             rq->t = t;
             rq->dt = (struct aoedev_thread*)per_cpu_ptr(d->devthread_percpu, smp_processor_id());
-
+            
             bio_sector(bio) = lba;
             bio->bi_bdev = d->blkdev;
             bio->bi_end_io = ata_io_complete;
@@ -753,6 +756,7 @@ static struct sk_buff * ata(struct aoedev *d, struct aoethread *t, struct sk_buf
             }
 
             rq->skb = skb;
+            rq->rcv = skb_get(rcv);
             rq->dt->busy++;
             
             submit_bio(rw, bio);
@@ -843,7 +847,8 @@ static struct sk_buff* make_response(struct sk_buff *skb, struct aoe_hdr *aoe, i
         return NULL;
     
     aoe = (struct aoe_hdr *) skb_mac_header(rskb);
-    skb_copy_bits(skb, 0, skb_mac_header(rskb), skb->len);
+    //skb_copy_bits(skb, 0, aoe, sizeof(struct aoe_hdr));
+    skb_copy_bits(skb, 0, aoe, skb->len);
     memcpy(aoe->dst, aoe->src, ETH_ALEN);
     memcpy(aoe->src, skb->dev->dev_addr, ETH_ALEN);
     aoe->type = __constant_htons(ETH_P_AOE);
@@ -914,7 +919,7 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
 
         switch (aoe->cmd) {
             case AOECMD_ATA:
-                rskb = ata(d, t, rskb);
+                rskb = ata(d, t, rskb, skb);
                 break;
             case AOECMD_CFG:
                 rskb = cfg(d, t, rskb);
