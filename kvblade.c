@@ -87,6 +87,13 @@ static void kvblade_release(struct kobject *kobj)
 {
 }
 
+static ssize_t kvblade_get_capacity(struct block_device *bd)
+{
+    if (bd->bd_part != NULL)
+        bd->bd_part->nr_sects * KERNEL_SECTOR_SIZE;    
+    return get_capacity(bd->bd_disk);
+}
+
 static ssize_t kvblade_sysfs_args(char *p, char *argv[], int argv_max)
 {
 	int argc = 0;
@@ -207,7 +214,7 @@ static ssize_t kvblade_add(u32 major, u32 minor, char *ifname, char *path)
 		return -ENOENT;
 	}
 
-	if (get_capacity(bd->bd_disk) == 0) {
+	if (kvblade_get_capacityy(bd) == 0) {
 		printk(KERN_ERR "add failed: zero sized block device.\n");
 		ret = -ENOENT;
 		goto err;
@@ -242,7 +249,7 @@ static ssize_t kvblade_add(u32 major, u32 minor, char *ifname, char *path)
 	d->netdev = nd;
 	d->major = major;
 	d->minor = minor;
-	d->scnt = get_capacity(bd->bd_disk);
+	d->scnt = kvblade_get_capacity(bd);
 	strncpy(d->path, path, nelem(d->path)-1);
 	spncpy(d->model, "EtherDrive(R) kvblade", nelem(d->model));
 	spncpy(d->sn, "SN HERE", nelem(d->sn));
