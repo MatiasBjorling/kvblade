@@ -755,7 +755,7 @@ static struct sk_buff * ata(struct aoedev *d, struct aoethread *t, struct sk_buf
                 
                 sg_init_table(sgt, MAXIOVECS);
                 sg_n = skb_to_sgvec_nomark(sin, sgt, sizeof(struct aoe_hdr), ata->scnt << 9);
-                if (rq->sg_n <= 0) {
+                if (sg_n <= 0) {
                     kmem_cache_free(root.aoe_rq_cache, rq);
                     printk(KERN_ERR "Can't bio_add_page for %d sectors (skb_to_sgvec_nomark)\n", ata->scnt);
                     goto drop;
