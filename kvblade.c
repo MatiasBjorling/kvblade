@@ -319,7 +319,7 @@ static ssize_t kvblade_del(u32 major, u32 minor, char *ifname) {
     spin_lock(&root.lock);
     
     rcu_read_lock();
-    hlist_for_each_entry_rcu_notrace(d, &root.devlist) {
+    hlist_for_each_entry_rcu_notrace(d, &root.devlist, node) {
         if (d->major == major &&
                 d->minor == minor &&
                 strcmp(d->netdev->name, ifname) == 0)
@@ -825,7 +825,7 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
     minor = aoe->minor;
 
     rcu_read_lock();
-    hlist_for_each_entry_rcu_notrace(d, &root.devlist) {
+    hlist_for_each_entry_rcu_notrace(d, &root.devlist, node) {
         if ((major != d->major && major != 0xffff) ||
                 (minor != d->minor && minor != 0xff) ||
                 (skb->dev != d->netdev))
