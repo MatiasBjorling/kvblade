@@ -207,7 +207,7 @@ static int count_busy(struct aoedev *d) {
     return ret;
 }
 
-static sk_buff* kvblade_announce_prepare(struct aoedev *d)
+static struct sk_buff* kvblade_announce_prepare(struct aoedev *d)
 {
     int len = sizeof *aoe + sizeof *cfg + d->nconfig;
 
