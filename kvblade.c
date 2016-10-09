@@ -972,6 +972,11 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
     dev_kfree_skb(skb);
 }
 
+static void ktsnd(struct aoethread* t, struct sk_buff *skb) {
+
+    dev_queue_xmit(skb);
+}
+
 static int kthread(void* data) {
     struct sk_buff *iskb, *oskb;
     struct aoethread* t = (struct aoethread*) data;
@@ -1007,7 +1012,7 @@ static int kthread(void* data) {
             }
             if ((oskb = skb_dequeue(&t->skb_outq)))
             {
-                dev_queue_xmit(oskb);
+                ktsnd(t, oskb);
                 idle = 0;
             }
             
