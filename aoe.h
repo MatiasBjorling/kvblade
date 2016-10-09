@@ -44,16 +44,23 @@ enum
 };
 
 struct aoe_hdr {
-	unsigned char dst[6];
-	unsigned char src[6];
-	__be16 type;
-	unsigned char verfl;
-	unsigned char err;
-	__be16 major;
-	unsigned char minor;
-	unsigned char cmd;
-	__be32 tag;
-        unsigned char data[0];
+    union
+    {
+        struct ethhdr eth;
+        struct 
+        {
+            unsigned char dst[6];
+            unsigned char src[6];
+            __be16 type;
+            unsigned char verfl;
+            unsigned char err;
+            __be16 major;
+            unsigned char minor;
+            unsigned char cmd;
+            __be32 tag;
+            unsigned char data[0];
+        };
+    };
 } __attribute__((packed)) typedef aoe_hdr_t;
 
 struct aoe_atahdr {

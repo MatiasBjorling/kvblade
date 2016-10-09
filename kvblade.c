@@ -842,6 +842,7 @@ static struct sk_buff* make_response(struct sk_buff *skb, int major, int minor) 
     rskb = skb_new(skb->dev, skb->dev->mtu);
     if (rskb == NULL)
         return NULL;
+    
     aoe = (struct aoe_hdr *) skb_mac_header(rskb);
     memcpy(skb_mac_header(rskb), skb_mac_header(skb), skb->len);
     memcpy(aoe->dst, aoe->src, ETH_ALEN);
@@ -857,6 +858,10 @@ static struct sk_buff* make_response(struct sk_buff *skb, int major, int minor) 
 static int rcv(struct sk_buff *skb, struct net_device *ndev, struct packet_type *pt, struct net_device *orig_dev) {
     struct aoethread* t;
     struct aoe_hdr *aoe;
+    struct
+    {
+        struct aoe_hdr aoe;
+    } cache;
 
     skb = skb_share_check(skb, GFP_ATOMIC);
     if (skb == NULL)
@@ -867,8 +872,8 @@ static int rcv(struct sk_buff *skb, struct net_device *ndev, struct packet_type 
         return -ENOMEM;
     }
     skb_push(skb, ETH_HLEN);
-
-    aoe = (struct aoe_hdr *) skb_mac_header(skb);
+    
+    aoe = (struct aoe_hdr *)skb_header_pointer(skb, 0, sizeof (struct aoe_hdr), &cache.aoe);
     if (~aoe->verfl & AOEFL_RSP)
     {
         t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, get_cpu());
