@@ -653,6 +653,7 @@ static void ata_io_complete(struct bio *bio, int error) {
     
     t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, get_cpu());
     skb_queue_tail(&t->skb_com, skb);
+    wake_up(&t->ktwaitq);
     put_cpu();
 }
 
@@ -700,9 +701,7 @@ static void ktcom(struct aoethread* t, struct sk_buff *skb) {
     dt->busy--;
 
     skb_trim(skb, len);
-    skb_queue_tail(&t->skb_outq, skb);
-
-    wake_up(&t->ktwaitq);
+    dev_queue_xmit(skb);
 }
 
 static inline loff_t readlba(u8 *lba) {
@@ -927,9 +926,8 @@ static int rcv(struct sk_buff *skb, struct net_device *ndev, struct packet_type 
     {
         t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, get_cpu());
         skb_queue_tail(&t->skb_inq, skb);
-        put_cpu();
-        
         wake_up(&t->ktwaitq);
+        put_cpu();
         
     } else {
         dev_kfree_skb(skb);
