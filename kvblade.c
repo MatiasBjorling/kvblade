@@ -104,8 +104,8 @@ struct kvblade_sysfs_entry {
 struct aoethread {
 
     struct sk_buff_head skb_outq_fast;
-    struct sk_buff_head skb_outq;
     struct sk_buff_head skb_inq_fast;
+    struct sk_buff_head skb_outq;
     struct sk_buff_head skb_inq;
     
     struct completion   ktrendez;
@@ -910,8 +910,9 @@ static int rcv(struct sk_buff *skb, struct net_device *ndev, struct packet_type 
     {
         t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, get_cpu());
         __skb_queue_tail(&t->skb_inq_fast, skb);
-        wake_up(&t->ktwaitq);
         put_cpu();
+        
+        wake_up(&t->ktwaitq);
         
     } else {
         dev_kfree_skb(skb);
@@ -962,8 +963,11 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
                 break;
         }
         
-        if (rskb)
+        if (rskb) {
+            preempt_disable();
             __skb_queue_tail(&t->skb_outq_fast, rskb);
+            preempt_enable();
+        }
 
         dt->busy--;
         
@@ -994,10 +998,12 @@ static int kthread(void* data) {
     DECLARE_WAITQUEUE(wait, current);
     sigset_t blocked;
     
+    preempt_disable();
     skb_queue_head_init(&t->skb_outq_fast);
     skb_queue_head_init(&t->skb_outq);
     skb_queue_head_init(&t->skb_inq_fast);
     skb_queue_head_init(&t->skb_inq);
+    preempt_enable();
 
 #ifdef PF_NOFREEZE
     current->flags |= PF_NOFREEZE;
@@ -1017,9 +1023,17 @@ static int kthread(void* data) {
             preempt_disable();
             do {
                 if ((iskb = __skb_dequeue(&t->skb_inq_fast)))
+                {
+                    preempt_enable();
                     ktrcv(t, iskb);
+                    preempt_disable();
+                }
                 if ((oskb = __skb_dequeue(&t->skb_outq_fast)))
+                {
+                    preempt_enable();
                     dev_queue_xmit(oskb);
+                    preempt_disable();
+                }
             } while (iskb || oskb);
             preempt_enable();
         
@@ -1038,8 +1052,8 @@ static int kthread(void* data) {
     } while (!kthread_should_stop());
     
     skb_queue_purge(&t->skb_outq_fast);
-    skb_queue_purge(&t->skb_outq);
     skb_queue_purge(&t->skb_inq_fast);
+    skb_queue_purge(&t->skb_outq);
     skb_queue_purge(&t->skb_inq);
     
     printk(KERN_INFO "tokmodule: Stopped a kvblade thread (%d)\n", smp_processor_id());
