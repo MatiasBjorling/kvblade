@@ -218,7 +218,7 @@ static ssize_t kvblade_add(u32 major, u32 minor, char *ifname, char *path)
 		return -ENOENT;
 	}
 
-	if (kvblade_get_capacityy(bd) == 0) {
+	if (kvblade_get_capacity(bd) == 0) {
 		printk(KERN_ERR "add failed: zero sized block device.\n");
 		ret = -ENOENT;
 		goto err;
