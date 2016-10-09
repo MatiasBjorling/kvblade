@@ -730,7 +730,7 @@ static struct sk_buff * ata(struct aoedev *d, struct aoethread *t, struct sk_buf
             }
             prefetchw(rq);
 
-            bio = init_rq_bio(rq);
+            bio = rq_init_bio(rq);
             prefetchw(bio);
             
             rq->d = d;
@@ -960,15 +960,21 @@ static int kthread(void* data) {
     do {
         __set_current_state(TASK_RUNNING);
         do {
+            
+            preempty_disable();
             if ((iskb = skb_dequeue(&t->skb_inq)))
                 ktrcv(t, iskb);
             if ((oskb = skb_dequeue(&t->skb_outq)))
                 dev_queue_xmit(oskb);
+            preempty_disable();
+            
         } while (iskb || oskb);
+        
         set_current_state(TASK_INTERRUPTIBLE);
         add_wait_queue(&t->ktwaitq, &wait);
         schedule();
         remove_wait_queue(&t->ktwaitq, &wait);
+        
     } while (!kthread_should_stop());
     
     skb_queue_purge(&t->skb_outq);
@@ -1007,9 +1013,14 @@ static int __init kvblade_module_init(void) {
         init_completion(&t->ktrendez);
         init_waitqueue_head(&t->ktwaitq);
 
-        t->task = kthread_run(kthread, t, "kvblade");
+        t->task = kthread_create(kthread, t, "kvblade(%d)", n);
         if (t->task == NULL || IS_ERR(t->task))
             return -EAGAIN;
+        
+        if (t->task == current)
+            set_current_state(TASK_RUNNING);
+        else if (t->task != NULL)
+            wake_up_process(t->task);
     }
 
     kobject_init_and_add(&root.kvblade_kobj, &kvblade_ktype_ops, NULL, "kvblade");
