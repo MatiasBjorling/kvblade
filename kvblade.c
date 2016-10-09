@@ -214,7 +214,7 @@ static void announce(struct aoedev *d, struct aoethread* t) {
     
     skb = skb_new(d->netdev, len);
     if (skb == NULL)
-        return NULL;
+        return;
     
     aoe = (struct aoe_hdr *) skb_mac_header(skb);
     cfg = (struct aoe_cfghdr *) aoe->data;
@@ -251,7 +251,6 @@ static ssize_t kvblade_add(u32 major, u32 minor, char *ifname, char *path) {
     struct aoethread* t;
     int n;
     struct aoedev_thread* dt;
-    struct sk_buff* skb;
     
     printk("kvblade_add\n");
     nd = dev_get_by_name(&init_net, ifname);
@@ -859,16 +858,14 @@ drop:
 
 static void ktannounce(struct aoethread* t) {
     struct aoedev *d;
-    struct sk_buff* skb;
     
     spin_lock(&root.lock);
     hlist_for_each_entry_rcu_notrace(d, &root.devlist, node)
     {        
         announce(d, t);
     }
-    spin_unlock(&root.lock);
-    
-    return 0;
+    spin_unlock(&root.lock);    
+    return;
 }
 
 static struct sk_buff* make_response(struct sk_buff *skb, int major, int minor) {
