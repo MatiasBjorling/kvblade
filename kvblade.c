@@ -684,7 +684,7 @@ static struct bio* rq_init_bio(struct aoereq *rq)
     return bio;
 }
 
-static struct sk_buff * ata(struct aoedev *d, struct aoethread *t, struct sk_buff *skb, struct sk_buff *rcv) {
+static struct sk_buff * ata(struct aoedev *d, struct aoethread *t, struct sk_buff *skb) {
     struct aoe_hdr *aoe;
     struct aoe_atahdr *ata;
     struct aoereq *rq;
@@ -776,7 +776,7 @@ drop:
     return NULL;
 }
 
-static struct sk_buff* cfg(struct aoedev *d, struct aoethread *t, struct sk_buff *skb, struct sk_buff *rcv) {
+static struct sk_buff* cfg(struct aoedev *d, struct aoethread *t, struct sk_buff *skb) {
     struct aoe_hdr *aoe;
     struct aoe_cfghdr *cfg;
     int len, cslen, ccmd;
@@ -835,8 +835,7 @@ drop:
     return NULL;
 }
 
-static struct sk_buff* make_response(struct sk_buff *skb, int major, int minor) {
-    struct aoe_hdr *aoe;
+static struct sk_buff* make_response(struct sk_buff *skb, struct aoe_hdr *aoe, int major, int minor) {
     struct sk_buff *rskb;
 
     rskb = skb_new(skb->dev, skb->dev->mtu);
@@ -844,7 +843,7 @@ static struct sk_buff* make_response(struct sk_buff *skb, int major, int minor) 
         return NULL;
     
     aoe = (struct aoe_hdr *) skb_mac_header(rskb);
-    memcpy(skb_mac_header(rskb), skb_mac_header(skb), skb->len);
+    skb_copy_bits(skb, 0, skb_mac_header(rskb), skb->len);
     memcpy(aoe->dst, aoe->src, ETH_ALEN);
     memcpy(aoe->src, skb->dev->dev_addr, ETH_ALEN);
     aoe->type = __constant_htons(ETH_P_AOE);
@@ -863,20 +862,11 @@ static int rcv(struct sk_buff *skb, struct net_device *ndev, struct packet_type 
         struct aoe_hdr aoe;
     } cache;
 
-    aoe = (struct aoe_hdr *)skb_header_pointer(skb, -ETH_HLEN, sizeof (struct aoe_hdr), &cache.aoe);
+    skb_push(skb, ETH_HLEN);
+    aoe = (struct aoe_hdr *)skb_header_pointer(skb, 0, sizeof (struct aoe_hdr), &cache.aoe);
+    
     if (~aoe->verfl & AOEFL_RSP)
     {
-        skb = skb_share_check(skb, GFP_ATOMIC);
-        if (skb == NULL)
-            return -ENOMEM;
-
-        if (skb_linearize(skb) < 0) {
-            dev_kfree_skb(skb);
-            return -ENOMEM;
-        }
-        
-        skb_push(skb, ETH_HLEN);
-        
         t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, get_cpu());
         skb_queue_tail(&t->skb_inq, skb);
         wake_up(&t->ktwaitq);
@@ -895,8 +885,12 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
     struct aoedev_thread *dt;
     struct aoe_hdr *aoe;
     int major, minor;
+    struct
+    {
+        struct aoe_hdr aoe;
+    } cache;
 
-    aoe = (struct aoe_hdr *) skb_mac_header(skb);
+    aoe = (struct aoe_hdr *)skb_header_pointer(skb, 0, sizeof (struct aoe_hdr), &cache.aoe);
     major = be16_to_cpu(aoe->major);
     minor = aoe->minor;
 
@@ -911,8 +905,8 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
         dt->busy++;
         
         rcu_read_unlock();
-
-        rskb = make_response(skb, d->major, d->minor);
+        
+        rskb = make_response(skb, aoe, d->major, d->minor);
         if (rskb == NULL) {
             dt->busy--;
             break;
@@ -920,10 +914,10 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
 
         switch (aoe->cmd) {
             case AOECMD_ATA:
-                rskb = ata(d, t, rskb, skb);
+                rskb = ata(d, t, rskb);
                 break;
             case AOECMD_CFG:
-                rskb = cfg(d, t, rskb, skb);
+                rskb = cfg(d, t, rskb);
                 break;
             default:
                 dev_kfree_skb(rskb);
