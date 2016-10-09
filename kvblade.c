@@ -863,18 +863,18 @@ static int rcv(struct sk_buff *skb, struct net_device *ndev, struct packet_type 
         struct aoe_hdr aoe;
     } cache;
 
-    skb = skb_share_check(skb, GFP_ATOMIC);
-    if (skb == NULL)
-        return -ENOMEM;
-
-    if (skb_linearize(skb) < 0) {
-        dev_kfree_skb(skb);
-        return -ENOMEM;
-    }
-    
     aoe = (struct aoe_hdr *)skb_header_pointer(skb, -ETH_HLEN, sizeof (struct aoe_hdr), &cache.aoe);
     if (~aoe->verfl & AOEFL_RSP)
     {
+        skb = skb_share_check(skb, GFP_ATOMIC);
+        if (skb == NULL)
+            return -ENOMEM;
+
+        if (skb_linearize(skb) < 0) {
+            dev_kfree_skb(skb);
+            return -ENOMEM;
+        }
+        
         skb_push(skb, ETH_HLEN);
         
         t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, get_cpu());
