@@ -186,6 +186,21 @@ static char* spncpy(char *d, const char *s, int n) {
     return r;
 }
 
+static int count_busy(struct aoedev *d) {
+    int n;
+    struct aoedev_thread* dt;
+    volatile int* pbusy;
+    
+    int ret =0;
+    for (n = 0; n < num_online_cpus(); n++) {
+        dt = (struct aoethread*)per_cpu_ptr(d->devthread_percpu, n);
+        
+        pbusy = (volatile int*)&dt->busy;
+        ret += *pbusy;
+    }
+    return ret;
+}
+
 static void kvblade_announce(struct aoedev *d, struct aoethread* t) {
     struct sk_buff *skb;
     struct aoe_hdr *aoe;
@@ -431,26 +446,17 @@ static ssize_t store_del(struct aoedev *dev, const char *page, size_t len) {
 
 static struct kvblade_sysfs_entry kvblade_sysfs_del = __ATTR(del, 0644, NULL, store_del);
 
-static int count_busy(struct aoedev *d) {
-    int n;
-    struct aoedev_thread* dt;
-    volatile int* pbusy;
-    
-    int ret =0;
-    for (n = 0; n < num_online_cpus(); n++) {
-        dt = (struct aoethread*)per_cpu_ptr(d->devthread_percpu, n);
-        
-        pbusy = (volatile int*)&dt->busy;
-        ret += *pbusy;
-    }
-    return ret;
-}
-
 static ssize_t show_scnt(struct aoedev *dev, char *page) {
     return sprintf(page, "%Ld\n", dev->scnt);
 }
 
 static struct kvblade_sysfs_entry kvblade_sysfs_scnt = __ATTR(scst, 0644, show_scnt, NULL);
+
+static ssize_t show_busy(struct aoedev *dev, char *page) {
+    return sprintf(page, "%d\n", count_busy(dev));
+}
+
+static struct kvblade_sysfs_entry kvblade_sysfs_busy = __ATTR(scst, 0644, show_busy, NULL);
 
 static ssize_t show_bdev(struct aoedev *dev, char *page) {
     return print_dev_t(page, dev->blkdev->bd_dev);
@@ -488,6 +494,7 @@ static struct kvblade_sysfs_entry kvblade_sysfs_sn = __ATTR(sn, 0644, show_sn, s
 
 static struct attribute *kvblade_ktype_attrs[] = {
     &kvblade_sysfs_scnt.attr,
+    &kvblade_sysfs_busy.attr,
     &kvblade_sysfs_bdev.attr,
     &kvblade_sysfs_bpath.attr,
     &kvblade_sysfs_model.attr,
