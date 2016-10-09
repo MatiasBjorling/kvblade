@@ -52,7 +52,7 @@ struct aoedev;
 
 struct aoereq {
     struct sk_buff *skb;    // Reference to the packet that we will use for transmission
-    struct sk_buff *rcv;    // Reference to the packet that was received (or at least a clone of it)
+    struct sk_buff *sin;    // Reference to the packet that was received (or at least a clone of it)
     struct aoedev *d;       // Reference to the device that the request will be actioned on
     struct aoethread* t;    // Reference to the thread thats processing this command
     struct aoedev_thread* dt;   // Reference to the structure used for data that relates to both the device and the thread
@@ -655,8 +655,10 @@ static void ata_io_complete(struct bio *bio, int error) {
     }
 
     rq->skb = NULL;
-    consume_skb(rq->rcv);
-    rq->rcv = NULL;
+    if (rq->sin != NULL) {
+        consume_skb(rq->sin);
+        rq->sin = NULL;
+    }
     kmem_cache_free(root.aoe_rq_cache, rq);
     dt->busy--;
 
@@ -687,7 +689,7 @@ static struct bio* rq_init_bio(struct aoereq *rq)
     return bio;
 }
 
-static struct sk_buff * ata(struct aoedev *d, struct aoethread *t, struct sk_buff *skb, struct sk_buff *rcv) {
+static struct sk_buff * ata(struct aoedev *d, struct aoethread *t, struct sk_buff *skb, struct sk_buff *sin) {
     struct aoe_hdr *aoe;
     struct aoe_atahdr *ata;
     struct aoereq *rq;
@@ -756,7 +758,7 @@ static struct sk_buff * ata(struct aoedev *d, struct aoethread *t, struct sk_buf
             }
 
             rq->skb = skb;
-            rq->rcv = skb_get(rcv);
+            //rq->sin = skb_get(sin);
             rq->dt->busy++;
             
             submit_bio(rw, bio);
