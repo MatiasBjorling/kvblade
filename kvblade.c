@@ -50,11 +50,16 @@ enum {
 struct aoedev;
 
 struct aoereq {
-    struct bio *bio;        // Reference to the IO
-    struct sk_buff *skb;    // Reference to the packet
-    struct aoedev *d;       // Reference to the device
-    struct aoethread* t;    // Reference to the thread
+    struct bio *bio;        // Reference to the IO that is the actual request
+    struct sk_buff *skb;    // Reference to the packet that initiated the request
+    struct aoedev *d;       // Reference to the device that the request will be actioned on
+    struct aoethread* t;    // Reference to the thread thats processing this command
+    struct aoedev_thread* dt;   // Reference to the structure used for data that relates to both the device and the thread
 } __attribute__((packed)) __attribute__((aligned(8))) typedef aoereq_t;
+
+struct aoedev_thread {
+    int                     busy;    
+} __attribute__((packed)) __attribute__((aligned(8))) typedef aoedev_thread_t;
 
 struct aoedev {
     
@@ -63,15 +68,18 @@ struct aoedev {
     struct hlist_node       node;
     __be16                  major;
     __be16                  minor;
-    atomic_t                busy;
+    
+    struct net_device*      netdev;
+    struct block_device*    blkdev;
+    
+    struct aoedev_thread*   devthread_percpu;
     
     struct kobject          kobj;
     
     int                     nconfig;
     loff_t                  scnt;
     
-    struct net_device*      netdev;
-    struct block_device*    blkdev;
+    
     unsigned char           config[1024];   
 
     char                    path[256];
@@ -221,8 +229,9 @@ static ssize_t kvblade_add(u32 major, u32 minor, char *ifname, char *path) {
     struct aoedev *d, *td;
     int ret = 0;
     struct aoethread* t;
-    int cpu;
-
+    int n;
+    struct aoedev_thread* dt;
+    
     printk("kvblade_add\n");
     nd = dev_get_by_name(&init_net, ifname);
     if (nd == NULL) {
@@ -275,7 +284,6 @@ static ssize_t kvblade_add(u32 major, u32 minor, char *ifname, char *path) {
 
     memset(d, 0, sizeof (struct aoedev));
     INIT_HLIST_NODE(&d->node);
-    atomic_set(&d->busy, 0);
     d->blkdev = bd;
     d->netdev = nd;
     d->major = major;
@@ -284,6 +292,21 @@ static ssize_t kvblade_add(u32 major, u32 minor, char *ifname, char *path) {
     strncpy(d->path, path, nelem(d->path) - 1);
     spncpy(d->model, "EtherDrive(R) kvblade", nelem(d->model));
     spncpy(d->sn, "SN HERE", nelem(d->sn));
+    
+    d->devthread_percpu = (struct aoedev_thread*)alloc_percpu(struct aoedev_thread);
+    if (!d->devthread_percpu) {
+        spin_unlock(&root.lock);
+        kfree(d);
+        
+        printk(KERN_ERR "add failed: alloc_percpu error for %d.%d\n", major, minor);
+        ret = -ENOMEM;
+        goto err;
+    }
+    
+    for (n = 0; n < num_online_cpus(); n++) {
+        dt = (struct aoedev_thread*)per_cpu_ptr(d->devthread_percpu, n);
+        memset(dt, 0, sizeof(struct aoedev_thread));
+    }
 
     kobject_init_and_add(&d->kobj, &kvblade_ktype, &root.kvblade_kobj, "%d.%d@%s", major, minor, ifname);
 
@@ -312,6 +335,11 @@ void kvblade_del_rcu(struct rcu_head* head)
 
     kobject_del(&d->kobj);
     kobject_put(&d->kobj);
+    
+    if (d->devthread_percpu != NULL) {
+        free_percpu(d->devthread_percpu);
+        d->devthread_percpu = NULL;
+    }
 }
 
 static ssize_t kvblade_del(u32 major, u32 minor, char *ifname) {
@@ -335,7 +363,7 @@ static ssize_t kvblade_del(u32 major, u32 minor, char *ifname) {
                 major, minor, ifname);
         ret = -ENOENT;
         goto err;
-    } else if (atomic_read(&d->busy)) {
+    } else if (count_busy(d)) {
         rcu_read_unlock();
         
         printk(KERN_ERR "del failed: device %d.%d@%s is busy.\n",
@@ -402,6 +430,21 @@ static ssize_t store_del(struct aoedev *dev, const char *page, size_t len) {
 }
 
 static struct kvblade_sysfs_entry kvblade_sysfs_del = __ATTR(del, 0644, NULL, store_del);
+
+static int count_busy(struct aoedev *d) {
+    int n;
+    struct aoedev_thread* dt;
+    volatile int* pbusy;
+    
+    int ret =0;
+    for (n = 0; n < num_online_cpus(); n++) {
+        dt = (struct aoethread*)per_cpu_ptr(d->devthread_percpu, n);
+        
+        pbusy = (volatile int*)&dt->busy;
+        ret += *pbusy;
+    }
+    return ret;
+}
 
 static ssize_t show_scnt(struct aoedev *dev, char *page) {
     return sprintf(page, "%Ld\n", dev->scnt);
@@ -566,6 +609,7 @@ static void ata_io_complete(struct bio *bio, int error) {
     struct aoereq *rq;
     struct aoedev *d;
     struct aoethread *t;
+    struct aoedev_thread *dt;
     struct sk_buff *skb;
     struct aoe_hdr *aoe;
     struct aoe_atahdr *ata;
@@ -578,6 +622,7 @@ static void ata_io_complete(struct bio *bio, int error) {
     rq = bio->bi_private;
     d = rq->d;
     t = rq->t;
+    dt = rq->dt;
     skb = rq->skb;
 
     aoe = (struct aoe_hdr *) skb_mac_header(skb);
@@ -600,7 +645,7 @@ static void ata_io_complete(struct bio *bio, int error) {
     bio_put(bio);
     rq->skb = NULL;
     kmem_cache_free(root.aoe_rq_cache, rq);
-    atomic_dec(&d->busy);
+    dt->busy--;
 
     skb_trim(skb, len);
     skb_queue_tail(&t->skb_outq, skb);
@@ -672,6 +717,7 @@ static struct sk_buff * ata(struct aoedev *d, struct aoethread *t, struct sk_buf
             rq->bio = bio;
             rq->d = d;
             rq->t = t;
+            rq->dt = (struct aoedev_thread*)per_cpu_ptr(d->devthread_percpu, smp_processor_id());
 
             bio_sector(bio) = lba;
             bio->bi_bdev = d->blkdev;
@@ -689,7 +735,8 @@ static struct sk_buff * ata(struct aoedev *d, struct aoethread *t, struct sk_buf
             }
 
             rq->skb = skb;
-            atomic_inc(&d->busy);
+            rq->dt->busy++;
+            
             submit_bio(rw, bio);
             return NULL;
         default:
@@ -821,6 +868,7 @@ static int rcv(struct sk_buff *skb, struct net_device *ndev, struct packet_type 
 static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
     struct sk_buff *rskb;
     struct aoedev *d;
+    struct aoedev_thread *dt;
     struct aoe_hdr *aoe;
     int major, minor;
 
@@ -835,12 +883,14 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
                 (skb->dev != d->netdev))
             continue;
         
-        atomic_inc(&d->busy);
+        dt = (struct aoedev_thread*)per_cpu_ptr(d->devthread_percpu, smp_processor_id());
+        dt->busy++;
+        
         rcu_read_unlock();
 
         rskb = make_response(skb, d->major, d->minor);
         if (rskb == NULL) {
-            atomic_dec(&d->busy);
+            dt->busy--;
             break;
         }
 
@@ -860,7 +910,7 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
         if (rskb)
             skb_queue_tail(&t->skb_outq, rskb);
 
-        atomic_dec(&d->busy);
+        dt->busy--;
         return;
     }
     rcu_read_unlock();
@@ -972,7 +1022,7 @@ static __exit void kvblade_module_exit(void) {
     
     for (; d; d = nd) {
         nd = hlist_entry_safe(rcu_dereference_raw(hlist_next_rcu(&d->node)), aoedev_t, node);
-        while (atomic_read(&d->busy))
+        while (count_busy(d))
             msleep(100);
         
         call_rcu(&d->rcu, kvblade_del_rcu);
