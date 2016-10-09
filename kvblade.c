@@ -60,13 +60,12 @@ struct aoedev {
     
     // This next 64 bytes are aligned and packed together so that
     // the driver keeps a single cache line hot per device
-    struct list_head        head;
+    struct hlist_node       node;
     __be16                  major;
     __be16                  minor;
     atomic_t                busy;
     
     struct kobject          kobj;
-    struct aoedev*          next;
     
     int                     nconfig;
     loff_t                  scnt;
@@ -79,6 +78,8 @@ struct aoedev {
     
     char                    model[ATA_MODEL_LEN];
     char                    sn[ATA_ID_SERNO_LEN];
+    
+    struct rcu_head         rcu; // List head used to delay the release of this object till after RCU sync
     
 } __attribute__((packed)) __attribute__((aligned(8))) typedef aoedev_t;
 
@@ -102,7 +103,7 @@ struct aoethread {
 struct core
 {
     spinlock_t          lock;
-    struct aoedev*      devlist;
+    struct hlist_head   devlist;
     struct kmem_cache*  aoe_rq_cache;
     struct kobject      kvblade_kobj;
     
@@ -242,12 +243,15 @@ static ssize_t kvblade_add(u32 major, u32 minor, char *ifname, char *path) {
     }
 
     spin_lock(&root.lock);
-
-    for (td = root.devlist; td; td = td->next)
+    
+    rcu_read_lock();
+    hlist_for_each_rcu(td, &root.devlist)
+    {
         if (td->major == major &&
                 td->minor == minor &&
                 td->netdev == nd) {
 
+            rcu_read_unlock();
             spin_unlock(&root.lock);
 
             printk(KERN_ERR "add failed: device %d.%d already exists on %s.\n",
@@ -256,15 +260,20 @@ static ssize_t kvblade_add(u32 major, u32 minor, char *ifname, char *path) {
             ret = -EEXIST;
             goto err;
         }
+    }
+    rcu_read_unlock();
 
     d = kmalloc(sizeof (struct aoedev), GFP_KERNEL);
     if (!d) {
+        spin_unlock(&root.lock);
+        
         printk(KERN_ERR "add failed: kmalloc error for %d.%d\n", major, minor);
         ret = -ENOMEM;
         goto err;
     }
 
     memset(d, 0, sizeof (struct aoedev));
+    INIT_HLIST_NODE(&d->node);
     atomic_set(&d->busy, 0);
     d->blkdev = bd;
     d->netdev = nd;
@@ -277,8 +286,7 @@ static ssize_t kvblade_add(u32 major, u32 minor, char *ifname, char *path) {
 
     kobject_init_and_add(&d->kobj, &kvblade_ktype, &root.kvblade_kobj, "%d.%d@%s", major, minor, ifname);
 
-    d->next = root.devlist;
-    root.devlist = d;
+    hlist_add_head_rcu(&d->node, &root.devlist);
     spin_unlock(&root.lock);
 
     dprintk("added %s as %d.%d@%s: %Lu sectors.\n",
@@ -286,47 +294,60 @@ static ssize_t kvblade_add(u32 major, u32 minor, char *ifname, char *path) {
     
     t = &root.thread;
     kvblade_announce(d, t);
+    
     return 0;
 err:
     blkdev_put(bd, FMODE_READ | FMODE_WRITE);
     return ret;
 }
 
+void kvblade_del_rcu(struct rcu_head* head)
+{
+    struct aoedev *d;
+    d = container_of(head, aoedev_t, rcu);
+    
+    blkdev_put(d->blkdev, FMODE_READ | FMODE_WRITE);
+
+    kobject_del(&d->kobj);
+    kobject_put(&d->kobj);
+}
+
 static ssize_t kvblade_del(u32 major, u32 minor, char *ifname) {
-    struct aoedev *d, **b;
+    struct aoedev *d;
     int ret;
 
-    b = &root.devlist;
-    d = root.devlist;
     spin_lock(&root.lock);
-
-    for (; d; b = &d->next, d = *b)
+    
+    rcu_read_lock();
+    hlist_for_each_rcu(d, &root.devlist) {
         if (d->major == major &&
                 d->minor == minor &&
                 strcmp(d->netdev->name, ifname) == 0)
             break;
-
+    }
+    
     if (d == NULL) {
+        rcu_read_unlock();
+        
         printk(KERN_ERR "del failed: device %d.%d@%s not found.\n",
                 major, minor, ifname);
         ret = -ENOENT;
         goto err;
     } else if (atomic_read(&d->busy)) {
+        rcu_read_unlock();
+        
         printk(KERN_ERR "del failed: device %d.%d@%s is busy.\n",
                 major, minor, ifname);
         ret = -EBUSY;
         goto err;
     }
 
-    *b = d->next;
-
+    hlist_del_rcu(d);
+    rcu_read_unlock();
+    
     spin_unlock(&root.lock);
 
-    blkdev_put(d->blkdev, FMODE_READ | FMODE_WRITE);
-
-    kobject_del(&d->kobj);
-    kobject_put(&d->kobj);
-
+    call_rcu(&d->rcu, kblade_del_rcu);
     return 0;
 err:
     spin_unlock(&root.lock);
@@ -624,6 +645,7 @@ static struct sk_buff * ata(struct aoedev *d, struct aoethread *t, struct sk_buf
                 lba &= 0x0000FFFFFFFFFFFFULL;
                 rw = WRITE;
             } while (0);
+            
             if ((lba + ata->scnt) > d->scnt) {
                 printk(KERN_ERR "sector I/O is out of range: %Lu (%d), max %Lu\n",
                         (long long) lba, ata->scnt, d->scnt);
@@ -802,16 +824,21 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
     major = be16_to_cpu(aoe->major);
     minor = aoe->minor;
 
-    spin_lock(&root.lock);
-    for (d = root.devlist; d; d = d->next) {
+    rcu_read_lock();
+    hlist_for_each_rcu(d, &root.devlist) {
         if ((major != d->major && major != 0xffff) ||
                 (minor != d->minor && minor != 0xff) ||
                 (skb->dev != d->netdev))
             continue;
+        
+        atomic_inc(&d->busy);
+        rcu_read_unlock();
 
         rskb = make_response(skb, d->major, d->minor);
-        if (rskb == NULL)
-            continue;
+        if (rskb == NULL) {
+            atomic_dec(&d->busy);
+            break;
+        }
 
         switch (aoe->cmd) {
             case AOECMD_ATA:
@@ -822,13 +849,17 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
                 break;
             default:
                 dev_kfree_skb(rskb);
-                continue;
+                rskb = NULL;
+                break;
         }
-
+        
         if (rskb)
             skb_queue_tail(&t->skb_outq, rskb);
+
+        atomic_dec(&d->busy);
+        return;
     }
-    spin_unlock(&root.lock);
+    rcu_read_unlock();
 
     dev_kfree_skb(skb);
 }
@@ -886,6 +917,7 @@ static int __init kvblade_module_init(void) {
     root.aoe_rq_cache = kmem_cache_create("aoe_rq_cache", sizeof (aoereq_t), sizeof (aoereq_t), SLAB_HWCACHE_ALIGN, NULL);
     if (root.aoe_rq_cache == NULL) return -ENOMEM;
 
+    INIT_HLIST_HEAD(&root.devlist);
     spin_lock_init(&root.lock);
 
     t = &root.thread;
@@ -914,18 +946,18 @@ static __exit void kvblade_module_exit(void) {
     dev_remove_pack(&pt);
     
     spin_lock(&root.lock);
-    d = root.devlist;
-    root.devlist = NULL;
+    rcu_read_lock();
+    d = hlist_first_rcu(&root.devlist);
+    rcu_assign_pointer(root.devlist.first, NULL);
+    rcu_read_unlock();
     spin_unlock(&root.lock);
     
     for (; d; d = nd) {
-        nd = d->next;
+        nd = d->node.next;
         while (atomic_read(&d->busy))
             msleep(100);
-        blkdev_put(d->blkdev, FMODE_READ | FMODE_WRITE);
-
-        kobject_del(&d->kobj);
-        kobject_put(&d->kobj);
+        
+        call_rcu(&d->rcu, kblade_del_rcu);
     }
     
     t = &root.thread;
