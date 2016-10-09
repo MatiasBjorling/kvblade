@@ -244,7 +244,7 @@ static void kvblade_announce(struct aoedev *d, struct aoethread* t) {
 
 static ssize_t kvblade_announce_all(void) {    
     struct aoethread* t;
-    struct aoedev *d
+    struct aoedev *d;
     int n;
     int cpu;
     
