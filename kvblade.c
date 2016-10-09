@@ -953,7 +953,7 @@ static __exit void kvblade_module_exit(void) {
     spin_unlock(&root.lock);
     
     for (; d; d = nd) {
-        nd = d->node.next;
+        nd = hlist_entry_safe(rcu_dereference_raw(hlist_next_rcu(&(pos)->member)), aoedev_t, node);
         while (atomic_read(&d->busy))
             msleep(100);
         
