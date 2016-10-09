@@ -885,7 +885,7 @@ static int rcv(struct sk_buff *skb, struct net_device *ndev, struct packet_type 
 
 static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
     struct sk_buff *rskb;
-    struct aoedev *d;
+    struct aoedev *d, *d2;
     struct aoedev_thread *dt;
     struct aoe_hdr *aoe;
     int major, minor;
@@ -929,10 +929,24 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
             skb_queue_tail(&t->skb_outq, rskb);
 
         dt->busy--;
-        return;
+        
+        // If its a specific address then we are finished
+        if (major == d->major && minor == d->minor)
+            return;
+        
+        // Otherwise we need to resume where we left off
+        // (if the buffer changes during this stage [which is very unlikely] then the broadcast will abort)
+        rcu_read_lock();
+        hlist_for_each_entry_rcu_notrace(d2, &root.devlist, node) {
+            if (d2 == d)
+                break;
+        }
+        if (d2 == NULL)
+            break;
     }
     rcu_read_unlock();
 
+    // We are finished with the buffer
     dev_kfree_skb(skb);
 }
 
