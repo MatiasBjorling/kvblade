@@ -59,7 +59,7 @@ struct aoereq {
     struct bio bio;         // The BIO structure is cached in the AOE request to minimize the calls to memory allocation
     struct bio_vec bvl[MAXIOVECS];  // These must be placed together as the BIO implementation requires it
     
-} __attribute__((packed)) __attribute__((aligned(8))) typedef aoereq_t;
+} __attribute__((packed)) __attribute__((aligned(SMP_CACHE_BYTES))) typedef aoereq_t;
 
 struct aoedev_thread {
     int                     busy;    
@@ -164,7 +164,7 @@ static struct sk_buff * skb_new(struct net_device *dev, ulong len) {
     if (len < ETH_ZLEN)
         len = ETH_ZLEN;
 
-    skb = alloc_skb(len, GFP_ATOMIC);
+    skb = __alloc_skb(len, GFP_ATOMIC & ~__GFP_DMA, SKB_ALLOC_FCLONE, numa_node_id());
     if (skb) {
         skb_reset_network_header(skb);
         skb_reset_mac_header(skb);
@@ -674,6 +674,16 @@ static inline loff_t readlba(u8 *lba) {
     return n;
 }
 
+static struct bio* rq_init_bio(struct aoereq *rq)
+{
+    struct bio *bio;    
+    bio = &rq->bio;
+    bio_init(bio);
+    bio->bi_max_vecs = MAXIOVECS;
+    bio->bi_io_vec = bio->bi_inline_vecs;
+    return bio;
+}
+
 static struct sk_buff * ata(struct aoedev *d, struct aoethread *t, struct sk_buff *skb, struct sk_buff *rcv) {
     struct aoe_hdr *aoe;
     struct aoe_atahdr *ata;
@@ -711,18 +721,17 @@ static struct sk_buff * ata(struct aoedev *d, struct aoethread *t, struct sk_buf
                 break;
             }
 
-            rq = (aoereq_t*) kmem_cache_alloc_node(root.aoe_rq_cache, GFP_ATOMIC, numa_node_id());
+            rq = (aoereq_t*) kmem_cache_alloc_node(root.aoe_rq_cache, GFP_ATOMIC & ~__GFP_DMA, numa_node_id());
             if (unlikely(rq == NULL)) {
                 printk(KERN_ERR "failed to allocate request obj\n");
                 ata->cmdstat = ATA_ERR;
                 ata->errfeat = ATA_ABORTED;
                 break;
             }
+            prefetchw(rq);
 
-            bio = &rq->bio;
-            bio_init(bio);
-            bio->bi_max_vecs = MAXIOVECS;
-            bio->bi_io_vec = bio->bi_inline_vecs;
+            bio = init_rq_bio(rq);
+            prefetchw(bio);
             
             rq->d = d;
             rq->t = t;
