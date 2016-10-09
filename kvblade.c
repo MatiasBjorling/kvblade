@@ -651,10 +651,9 @@ static void ata_io_complete(struct bio *bio, int error) {
     prq = (struct aoereq **)(&skb->cb[0]);
     *prq = rq;
     
-    t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, get_cpu());
+    t = rq->t;
     skb_queue_tail(&t->skb_com, skb);
-    wake_up(&t->ktwaitq);
-    put_cpu();
+    wake_up(&t->ktwaitq);;
 }
 
 static void ktcom(struct aoethread* t, struct sk_buff *skb) {
