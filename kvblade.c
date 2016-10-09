@@ -758,7 +758,7 @@ static struct sk_buff * ata(struct aoedev *d, struct aoethread *t, struct sk_buf
             }
 
             rq->skb = skb;
-            //rq->sin = skb_get(sin);
+            rq->sin = skb_get(sin);
             rq->dt->busy++;
             
             submit_bio(rw, bio);
