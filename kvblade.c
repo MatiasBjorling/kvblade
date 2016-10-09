@@ -209,7 +209,7 @@ static int count_busy(struct aoedev *d) {
 
 static struct sk_buff* kvblade_announce_prepare(struct aoedev *d)
 {
-    int len = sizeof *aoe + sizeof *cfg + d->nconfig;
+    int len = sizeof(struct aoe_hdr) + sizeof(struct aoe_cfghdr) + d->nconfig;
 
     skb = skb_new(d->netdev, len);
     if (skb == NULL)
