@@ -193,7 +193,7 @@ static int count_busy(struct aoedev *d) {
     
     int ret =0;
     for (n = 0; n < num_online_cpus(); n++) {
-        dt = (struct aoethread*)per_cpu_ptr(d->devthread_percpu, n);
+        dt = (struct aoedev_thread*)per_cpu_ptr(d->devthread_percpu, n);
         
         pbusy = (volatile int*)&dt->busy;
         ret += *pbusy;
