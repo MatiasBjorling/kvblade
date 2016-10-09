@@ -1046,7 +1046,11 @@ static int __init kvblade_module_init(void) {
         t->task = kthread_create(kthread, t, "kvblade(%d)", n);
         if (t->task == NULL || IS_ERR(t->task))
             return -EAGAIN;
-        tok_wake_up_process(t->task);
+        
+        if (t->task == current)
+            set_current_state(TASK_RUNNING);
+        else if (t->task != NULL)
+            wake_up_process(t->task);
     }
 
     kobject_init_and_add(&root.kvblade_kobj, &kvblade_ktype_ops, NULL, "kvblade");
