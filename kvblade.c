@@ -730,7 +730,7 @@ static struct sk_buff * ata(struct aoedev *d, struct aoethread *t, struct sk_buf
             }
             prefetchw(rq);
 
-            bio = init_rq_bio(rq);
+            bio = rq_init_bio(rq);
             prefetchw(bio);
             
             rq->d = d;
