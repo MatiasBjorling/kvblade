@@ -26,7 +26,7 @@
 #define nelem(A) (sizeof (A) / sizeof (A)[0])
 
 #define MAXSECTORS(mtu) (((mtu) - sizeof (struct aoe_hdr) - sizeof (struct aoe_atahdr)) / 512)
-#define MAXBUFFERS  512
+#define MAXBUFFERS  256
 #define MAXIOVECS 16
 
 #if LINUX_VERSION_CODE <= KERNEL_VERSION(3,14,0)
