@@ -347,7 +347,7 @@ static ssize_t kvblade_del(u32 major, u32 minor, char *ifname) {
     
     spin_unlock(&root.lock);
 
-    call_rcu(&d->rcu, kblade_del_rcu);
+    call_rcu(&d->rcu, kvblade_del_rcu);
     return 0;
 err:
     spin_unlock(&root.lock);
@@ -957,7 +957,7 @@ static __exit void kvblade_module_exit(void) {
         while (atomic_read(&d->busy))
             msleep(100);
         
-        call_rcu(&d->rcu, kblade_del_rcu);
+        call_rcu(&d->rcu, kvblade_del_rcu);
     }
     
     t = &root.thread;
