@@ -42,8 +42,6 @@
 #define KERNEL_SECTOR_SIZE 512
 #endif
 
-static struct kobject kvblade_kobj;
-
 enum {
     ATA_MODEL_LEN = 40,
     ATA_LBA28MAX = 0x0fffffff,
@@ -52,9 +50,10 @@ enum {
 struct aoedev;
 
 struct aoereq {
-    struct bio *bio;
-    struct sk_buff *skb;
-    struct aoedev *d; /* blech.  I'm blind to a cleaner solution. */
+    struct bio *bio;        // Reference to the IO
+    struct sk_buff *skb;    // Reference to the packet
+    struct aoedev *d;       // Reference to the device
+    struct aoethread* t;    // Reference to the thread
 } __attribute__((packed)) __attribute__((aligned(8))) typedef aoereq_t;
 
 struct aoedev {
@@ -94,7 +93,7 @@ struct aoethread {
     struct sk_buff_head skb_outq;
     struct sk_buff_head skb_inq;
     
-    struct completion   ktrendez;    
+    struct completion   ktrendez;
     wait_queue_head_t   ktwaitq;
     struct task_struct* task;
     
@@ -105,6 +104,7 @@ struct core
     spinlock_t          lock;
     struct aoedev*      devlist;
     struct kmem_cache*  aoe_rq_cache;
+    struct kobject      kvblade_kobj;
     
     struct aoethread    thread;
     
@@ -177,7 +177,7 @@ static char* spncpy(char *d, const char *s, int n) {
     return r;
 }
 
-static void kvblade_announce(struct aoedev *d) {
+static void kvblade_announce(struct aoedev *d, struct aoethread* t) {
     struct sk_buff *skb;
     struct aoe_hdr *aoe;
     struct aoe_cfghdr *cfg;
@@ -210,8 +210,8 @@ static void kvblade_announce(struct aoedev *d) {
         cfg->cslen = cpu_to_be16(d->nconfig);
         memcpy(cfg->data, d->config, d->nconfig);
     }
-    skb_queue_tail(&root.thread.skb_outq, skb);
-    wake_up(&root.thread.ktwaitq);
+    skb_queue_tail(&t->skb_outq, skb);
+    wake_up(&t->ktwaitq);
 }
 
 static ssize_t kvblade_add(u32 major, u32 minor, char *ifname, char *path) {
@@ -219,6 +219,7 @@ static ssize_t kvblade_add(u32 major, u32 minor, char *ifname, char *path) {
     struct block_device *bd;
     struct aoedev *d, *td;
     int ret = 0;
+    struct aoethread* t;
 
     printk("kvblade_add\n");
     nd = dev_get_by_name(&init_net, ifname);
@@ -274,7 +275,7 @@ static ssize_t kvblade_add(u32 major, u32 minor, char *ifname, char *path) {
     spncpy(d->model, "EtherDrive(R) kvblade", nelem(d->model));
     spncpy(d->sn, "SN HERE", nelem(d->sn));
 
-    kobject_init_and_add(&d->kobj, &kvblade_ktype, &kvblade_kobj, "%d.%d@%s", major, minor, ifname);
+    kobject_init_and_add(&d->kobj, &kvblade_ktype, &root.kvblade_kobj, "%d.%d@%s", major, minor, ifname);
 
     d->next = root.devlist;
     root.devlist = d;
@@ -282,7 +283,9 @@ static ssize_t kvblade_add(u32 major, u32 minor, char *ifname, char *path) {
 
     dprintk("added %s as %d.%d@%s: %Lu sectors.\n",
             path, major, minor, ifname, d->scnt);
-    kvblade_announce(d);
+    
+    t = &root.thread;
+    kvblade_announce(d, t);
     return 0;
 err:
     blkdev_put(bd, FMODE_READ | FMODE_WRITE);
@@ -452,7 +455,7 @@ static ssize_t kvblade_attr_store(struct kobject *kobj, struct attribute *attr,
 
     entry = container_of(attr, struct kvblade_sysfs_entry, attr);
 
-    if (kobj == &kvblade_kobj)
+    if (kobj == &root.kvblade_kobj)
         ret = entry->store(NULL, page, length);
     else {
         struct aoedev *dev = container_of(kobj, struct aoedev, kobj);
@@ -539,6 +542,7 @@ static int ata_identify(struct aoedev *d, struct aoe_atahdr *ata) {
 static void ata_io_complete(struct bio *bio, int error) {
     struct aoereq *rq;
     struct aoedev *d;
+    struct aoethread *t;
     struct sk_buff *skb;
     struct aoe_hdr *aoe;
     struct aoe_atahdr *ata;
@@ -550,6 +554,7 @@ static void ata_io_complete(struct bio *bio, int error) {
 
     rq = bio->bi_private;
     d = rq->d;
+    t = rq->t;
     skb = rq->skb;
 
     aoe = (struct aoe_hdr *) skb_mac_header(skb);
@@ -575,9 +580,9 @@ static void ata_io_complete(struct bio *bio, int error) {
     atomic_dec(&d->busy);
 
     skb_trim(skb, len);
-    skb_queue_tail(&root.thread.skb_outq, skb);
+    skb_queue_tail(&t->skb_outq, skb);
 
-    wake_up(&root.thread.ktwaitq);
+    wake_up(&t->ktwaitq);
 }
 
 static inline loff_t readlba(u8 *lba) {
@@ -591,7 +596,7 @@ static inline loff_t readlba(u8 *lba) {
     return n;
 }
 
-static struct sk_buff * ata(struct aoedev *d, struct sk_buff *skb, struct sk_buff *rcv) {
+static struct sk_buff * ata(struct aoedev *d, struct aoethread *t, struct sk_buff *skb, struct sk_buff *rcv) {
     struct aoe_hdr *aoe;
     struct aoe_atahdr *ata;
     struct aoereq *rq;
@@ -642,6 +647,7 @@ static struct sk_buff * ata(struct aoedev *d, struct sk_buff *skb, struct sk_buf
             }
             rq->bio = bio;
             rq->d = d;
+            rq->t = t;
 
             bio_sector(bio) = lba;
             bio->bi_bdev = d->blkdev;
@@ -681,7 +687,7 @@ drop:
     return NULL;
 }
 
-static struct sk_buff* cfg(struct aoedev *d, struct sk_buff *skb, struct sk_buff *rcv) {
+static struct sk_buff* cfg(struct aoedev *d, struct aoethread *t, struct sk_buff *skb, struct sk_buff *rcv) {
     struct aoe_hdr *aoe;
     struct aoe_cfghdr *cfg;
     int len, cslen, ccmd;
@@ -760,6 +766,7 @@ static struct sk_buff* make_response(struct sk_buff *skb, int major, int minor) 
 }
 
 static int rcv(struct sk_buff *skb, struct net_device *ndev, struct packet_type *pt, struct net_device *orig_dev) {
+    struct aoethread* t;
     struct aoe_hdr *aoe;
 
     skb = skb_share_check(skb, GFP_ATOMIC);
@@ -773,9 +780,11 @@ static int rcv(struct sk_buff *skb, struct net_device *ndev, struct packet_type 
     skb_push(skb, ETH_HLEN);
 
     aoe = (struct aoe_hdr *) skb_mac_header(skb);
-    if (~aoe->verfl & AOEFL_RSP) {
-        skb_queue_tail(&root.thread.skb_inq, skb);
-        wake_up(&root.thread.ktwaitq);
+    if (~aoe->verfl & AOEFL_RSP)
+    {
+        t = &root.thread;
+        skb_queue_tail(&t->skb_inq, skb);
+        wake_up(&t->ktwaitq);
     } else {
         dev_kfree_skb(skb);
     }
@@ -783,7 +792,7 @@ static int rcv(struct sk_buff *skb, struct net_device *ndev, struct packet_type 
     return 0;
 }
 
-static void ktrcv(struct sk_buff *skb) {
+static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
     struct sk_buff *rskb;
     struct aoedev *d;
     struct aoe_hdr *aoe;
@@ -806,10 +815,10 @@ static void ktrcv(struct sk_buff *skb) {
 
         switch (aoe->cmd) {
             case AOECMD_ATA:
-                rskb = ata(d, rskb, skb);
+                rskb = ata(d, t, rskb, skb);
                 break;
             case AOECMD_CFG:
-                rskb = cfg(d, rskb, skb);
+                rskb = cfg(d, t, rskb, skb);
                 break;
             default:
                 dev_kfree_skb(rskb);
@@ -817,17 +826,20 @@ static void ktrcv(struct sk_buff *skb) {
         }
 
         if (rskb)
-            skb_queue_tail(&root.thread.skb_outq, rskb);
+            skb_queue_tail(&t->skb_outq, rskb);
     }
     spin_unlock(&root.lock);
 
     dev_kfree_skb(skb);
 }
 
-static int kthread(void *errorparameternameomitted) {
+static int kthread(struct aoethread* t) {
     struct sk_buff *iskb, *oskb;
     DECLARE_WAITQUEUE(wait, current);
     sigset_t blocked;
+    
+    skb_queue_head_init(&t->skb_outq);
+    skb_queue_head_init(&t->skb_inq);
 
 #ifdef PF_NOFREEZE
     current->flags |= PF_NOFREEZE;
@@ -836,22 +848,28 @@ static int kthread(void *errorparameternameomitted) {
     sigfillset(&blocked);
     sigprocmask(SIG_BLOCK, &blocked, NULL);
     flush_signals(current);
-    complete(&root.thread.ktrendez);
+    complete(&t->ktrendez);
+    
     do {
         __set_current_state(TASK_RUNNING);
         do {
-            if ((iskb = skb_dequeue(&root.thread.skb_inq)))
-                ktrcv(iskb);
-            if ((oskb = skb_dequeue(&root.thread.skb_outq)))
+            if ((iskb = skb_dequeue(&t->skb_inq)))
+                ktrcv(t, iskb);
+            if ((oskb = skb_dequeue(&t->skb_outq)))
                 dev_queue_xmit(oskb);
         } while (iskb || oskb);
         set_current_state(TASK_INTERRUPTIBLE);
-        add_wait_queue(&root.thread.ktwaitq, &wait);
+        add_wait_queue(&t->ktwaitq, &wait);
         schedule();
-        remove_wait_queue(&root.thread.ktwaitq, &wait);
+        remove_wait_queue(&t->ktwaitq, &wait);
     } while (!kthread_should_stop());
+    
+    skb_queue_purge(&t->skb_outq);
+    skb_queue_purge(&t->skb_inq);
+    
     __set_current_state(TASK_RUNNING);
-    complete(&root.thread.ktrendez);
+    complete(&t->ktrendez);
+    
     return 0;
 }
 
@@ -861,25 +879,27 @@ static struct packet_type pt = {
 };
 
 static int __init kvblade_module_init(void) {
+    struct aoethread* t;
+
     root.aoe_rq_cache = kmem_cache_create("aoe_rq_cache", sizeof (aoereq_t), sizeof (aoereq_t), SLAB_HWCACHE_ALIGN, NULL);
     if (root.aoe_rq_cache == NULL) return -ENOMEM;
 
-    skb_queue_head_init(&root.thread.skb_outq);
-    skb_queue_head_init(&root.thread.skb_inq);
-
     spin_lock_init(&root.lock);
 
-    init_completion(&root.thread.ktrendez);
-    init_waitqueue_head(&root.thread.ktwaitq);
+    t = &root.thread;
+    memset(t, 0, sizeof(aoethread_t));
+    init_completion(&t->ktrendez);
+    init_waitqueue_head(&t->ktwaitq);
 
-    root.thread.task = kthread_run(kthread, NULL, "kvblade");
-    if (root.thread.task == NULL || IS_ERR(root.thread.task))
+    t->task = kthread_run(kthread, t, "kvblade");
+    if (t->task == NULL || IS_ERR(t->task))
         return -EAGAIN;
 
-    kobject_init_and_add(&kvblade_kobj, &kvblade_ktype_ops, NULL, "kvblade");
+    kobject_init_and_add(&root.kvblade_kobj, &kvblade_ktype_ops, NULL, "kvblade");
 
-    wait_for_completion(&root.thread.ktrendez);
-    init_completion(&root.thread.ktrendez); // for exit
+    t = &root.thread;
+    wait_for_completion(&t->ktrendez);
+    init_completion(&t->ktrendez); // for exit
 
     dev_add_pack(&pt);
     return 0;
@@ -887,6 +907,7 @@ static int __init kvblade_module_init(void) {
 
 static __exit void kvblade_module_exit(void) {
     struct aoedev *d, *nd;
+    struct aoethread* t;
 
     dev_remove_pack(&pt);
     
@@ -904,13 +925,13 @@ static __exit void kvblade_module_exit(void) {
         kobject_del(&d->kobj);
         kobject_put(&d->kobj);
     }
-    kthread_stop(root.thread.task);
-    wait_for_completion(&root.thread.ktrendez);
-    skb_queue_purge(&root.thread.skb_outq);
-    skb_queue_purge(&root.thread.skb_inq);
-
-    kobject_del(&kvblade_kobj);
-    kobject_put(&kvblade_kobj);
+    
+    t = &root.thread;
+    kthread_stop(t->task);
+    wait_for_completion(&t->ktrendez);
+    
+    kobject_del(&root.kvblade_kobj);
+    kobject_put(&root.kvblade_kobj);
 
     if (root.aoe_rq_cache != NULL) {
         kmem_cache_destroy(root.aoe_rq_cache);
