@@ -624,7 +624,6 @@ static void ata_io_complete(struct bio *bio, int error) {
     struct aoe_atahdr *ata;
     int len;
     unsigned int bytes = 0;
-    int cpu;
 
     if (!error)
         bytes = bio->bi_io_vec[0].bv_len;
@@ -988,8 +987,9 @@ static int kthread(void* data) {
 
     printk(KERN_INFO "tokmodule: Started a new kvblade thread (%d)\n", smp_processor_id());
 
-    __set_current_state(TASK_RUNNING);
+    preempt_disable();
     do {
+        __set_current_state(TASK_RUNNING);
         do {
             idle++;
             if ((iskb = skb_dequeue(&t->skb_inq)))
@@ -1002,19 +1002,22 @@ static int kthread(void* data) {
                 dev_queue_xmit(oskb);
                 idle = 0;
             }
-        } while (iskb || oskb);
+            
+            if (idle < KSPIN)
+            {
+                schedule();
+                continue;
+            }
+        } while (idle > 0);
         
-        if (idle <= KSPIN)
-            schedule();
-        else
-        {
-            set_current_state(TASK_INTERRUPTIBLE);
-            add_wait_queue(&t->ktwaitq, &wait);
-            schedule();
-            remove_wait_queue(&t->ktwaitq, &wait);
-            __set_current_state(TASK_RUNNING);
-        }        
+        set_current_state(TASK_INTERRUPTIBLE);
+        add_wait_queue(&t->ktwaitq, &wait);
+        schedule();
+        remove_wait_queue(&t->ktwaitq, &wait);
+        __set_current_state(TASK_RUNNING);
+        
     } while (!kthread_should_stop());
+    preempt_enable();
 
     skb_queue_purge(&t->skb_outq);
     skb_queue_purge(&t->skb_inq);
