@@ -59,7 +59,7 @@ struct aoereq {
     struct bio bio;         // The BIO structure is cached in the AOE request to minimize the calls to memory allocation
     struct bio_vec bvl[MAXIOVECS];  // These must be placed together as the BIO implementation requires it
     
-} __attribute__((packed)) __attribute__((aligned(SMP_CACHE_BYTES))) typedef aoereq_t;
+} __attribute__((packed)) __attribute__((aligned(8))) typedef aoereq_t;
 
 struct aoedev_thread {
     int                     busy;    
@@ -460,7 +460,7 @@ static ssize_t show_busy(struct aoedev *dev, char *page) {
     return sprintf(page, "%d\n", count_busy(dev));
 }
 
-static struct kvblade_sysfs_entry kvblade_sysfs_busy = __ATTR(scst, 0644, show_busy, NULL);
+static struct kvblade_sysfs_entry kvblade_sysfs_busy = __ATTR(busy, 0644, show_busy, NULL);
 
 static ssize_t show_bdev(struct aoedev *dev, char *page) {
     return print_dev_t(page, dev->blkdev->bd_dev);
@@ -1005,6 +1005,8 @@ static int __init kvblade_module_init(void) {
     
     INIT_HLIST_HEAD(&root.devlist);
     spin_lock_init(&root.lock);
+    
+    kobject_init_and_add(&root.kvblade_kobj, &kvblade_ktype_ops, NULL, "kvblade");
 
     for (n = 0; n < num_online_cpus(); n++) {
         t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, n);
@@ -1021,12 +1023,7 @@ static int __init kvblade_module_init(void) {
             set_current_state(TASK_RUNNING);
         else if (t->task != NULL)
             wake_up_process(t->task);
-    }
-
-    kobject_init_and_add(&root.kvblade_kobj, &kvblade_ktype_ops, NULL, "kvblade");
-
-    for (n = 0; n < num_online_cpus(); n++) {
-        t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, n);
+    
         wait_for_completion(&t->ktrendez);
         init_completion(&t->ktrendez); // for exit
     }
