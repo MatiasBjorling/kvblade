@@ -207,16 +207,21 @@ static int count_busy(struct aoedev *d) {
     return ret;
 }
 
-static void kvblade_announce(struct aoedev *d, struct aoethread* t) {
-    struct sk_buff *skb;
-    struct aoe_hdr *aoe;
-    struct aoe_cfghdr *cfg;
+static sk_buff* kvblade_announce_prepare(struct aoedev *d)
+{
     int len = sizeof *aoe + sizeof *cfg + d->nconfig;
 
     skb = skb_new(d->netdev, len);
     if (skb == NULL)
-        return;
+        return NULL;
+    
+    return skb;
+}
 
+static void kvblade_announce(struct aoedev *d, struct aoethread* t, struct sk_buff* skb) {
+    struct aoe_hdr *aoe;
+    struct aoe_cfghdr *cfg;
+    
     aoe = (struct aoe_hdr *) skb_mac_header(skb);
     cfg = (struct aoe_cfghdr *) aoe->data;
 
@@ -240,24 +245,43 @@ static void kvblade_announce(struct aoedev *d, struct aoethread* t) {
         cfg->cslen = cpu_to_be16(d->nconfig);
         memcpy(cfg->data, d->config, d->nconfig);
     }
-    skb_queue_tail(&t->skb_outq, skb);
-    wake_up(&t->ktwaitq);
+    __skb_queue_tail(&t->skb_outq_fast, skb);
 }
 
 static ssize_t kvblade_announce_all(void) {    
     struct aoethread* t;
-    struct aoedev *d;
+    struct aoedev *d, *d2;
+    struct sk_buff* skb;
     int cpu;
     
-    cpu = get_cpu();
+    spin_lock(&root.lock);    
     rcu_read_lock();
     hlist_for_each_entry_rcu_notrace(d, &root.devlist, node)
     {
-        t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, cpu);
-        kvblade_announce(d, t);
+        rcu_read_unlock();
+        
+        skb = kvblade_announce_prepare(d);
+        if (skb == NULL) {
+            spin_unlock(&root.lock);
+            return 0;
+        }
+        
+        t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, get_cpu());
+        kvblade_announce(d, t, skb);
+        put_cpu();
+        
+        wake_up(&t->ktwaitq);
+        
+        rcu_read_lock();
+        hlist_for_each_entry_rcu_notrace(d2, &root.devlist, node) {
+            if (d2 == d)
+                break;
+        }
+        if (d2 == NULL)
+            break;
     }
-    rcu_read_unlock();
-    put_cpu();
+    rcu_read_unlock();    
+    spin_unlock(&root.lock);
     
     return 0;
 }
@@ -270,6 +294,7 @@ static ssize_t kvblade_add(u32 major, u32 minor, char *ifname, char *path) {
     struct aoethread* t;
     int n;
     struct aoedev_thread* dt;
+    struct sk_buff* skb;
     
     printk("kvblade_add\n");
     nd = dev_get_by_name(&init_net, ifname);
@@ -355,10 +380,15 @@ static ssize_t kvblade_add(u32 major, u32 minor, char *ifname, char *path) {
     dprintk("added %s as %d.%d@%s: %Lu sectors.\n",
             path, major, minor, ifname, d->scnt);
     
-    t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, get_cpu());
-    kvblade_announce(d, t);
-    put_cpu();
-    
+    skb = kvblade_announce_prepare(d);
+    if (skb != NULL)
+    {    
+        t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, get_cpu());
+        kvblade_announce(d, t, skb);
+        put_cpu();
+
+        wake_up(&t->ktwaitq);
+    }
     return 0;
 err:
     blkdev_put(bd, FMODE_READ | FMODE_WRITE);
@@ -969,21 +999,28 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
             preempt_enable();
         }
 
-        dt->busy--;
-        
         // If its a specific address then we are finished
-        if (major == d->major && minor == d->minor)
+        if (major == d->major && minor == d->minor) {
+            dt->busy--;
             return;
+        }
         
         // Otherwise we need to resume where we left off
         // (if the buffer changes during this stage [which is very unlikely] then the broadcast will abort)
         rcu_read_lock();
         hlist_for_each_entry_rcu_notrace(d2, &root.devlist, node) {
-            if (d2 == d)
+            if (d2 == d) {
                 break;
+            }
         }
-        if (d2 == NULL)
+        if (d2 == NULL) {
+            dt->busy--;
             break;
+        }
+        
+        // Reduced the busy count which will allow the device
+        // to be destroyed
+        dt->busy--;
     }
     rcu_read_unlock();
 
@@ -998,12 +1035,10 @@ static int kthread(void* data) {
     DECLARE_WAITQUEUE(wait, current);
     sigset_t blocked;
     
-    preempt_disable();
     skb_queue_head_init(&t->skb_outq_fast);
     skb_queue_head_init(&t->skb_outq);
     skb_queue_head_init(&t->skb_inq_fast);
     skb_queue_head_init(&t->skb_inq);
-    preempt_enable();
 
 #ifdef PF_NOFREEZE
     current->flags |= PF_NOFREEZE;
