@@ -62,3 +62,11 @@ Testing:
 * RAM: 96GB
 * Networking: 1GBit/s
 * Disks: SSD (1GB) and HDD (4GB)
+* Blocksize: 512 bytes
+* MTU: 1024 bytes
+
+Results:
+* Previous bandwidth: 80Mbit/s
+* Current bandwidth: 536Mbit/s
+* Previous IOPS: 20k IOPS
+* Current IOPS: 137k IOPS
