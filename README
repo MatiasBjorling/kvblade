@@ -65,7 +65,8 @@ Testing:
 * Blocksize: 512 bytes
 * MTU: 1024 bytes
 
-Results:
+Results
+* Command: dd if=/dev/zero of=/dev/etherd/e1.0 bs=409600 count=1000 oflag=direct
 * Previous bandwidth: 80Mbit/s
 * Current bandwidth: 536Mbit/s
 * Previous IOPS: 20k IOPS
