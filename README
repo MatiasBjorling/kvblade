@@ -69,5 +69,5 @@ Results
 * Command: dd if=/dev/zero of=/dev/etherd/e1.0 bs=409600 count=1000 oflag=direct
 * Previous bandwidth: 80Mbit/s
 * Current bandwidth: 536Mbit/s
-* Previous IOPS: 20k IOPS
-* Current IOPS: 137k IOPS
+* Previous IOPS: 10k IOPS
+* Current IOPS: 68k IOPS
