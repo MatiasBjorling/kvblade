@@ -47,7 +47,7 @@ Improvements:
 * Removed the 16 static buffers and replaced them with 512 slab objects that are NUMA aligned
 * Imported the AOE headers from the latest linux kernel version (4.2.9 - 4.8)
 * Fixed incorrect reporting of capacity when attaching to a partition device
-* Converted the worker thread to use a highly optimized multithreading architecture
+* Converted the single threaded worker to use a highly optimized multithreading architecture (pinned thread per core)
 * Removed the worker spinlock and replaced with RCU symantics
 * Removed a zero memory operation on new packets (which was wasted CPU time)
 * Added a new system operation to broadcast AOE announce packets for all hosted devices (echo > /sys/kvblade/announce)
