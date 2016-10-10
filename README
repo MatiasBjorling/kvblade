@@ -1,5 +1,5 @@
 
-kvblade: a 2.6 linux kernel module
+kvblade: a 4.2+ linux kernel module
 ---
 
 Kvblade is a kernel module implementing the target
@@ -30,13 +30,20 @@ things that you can help with.
 Author:
 	Sam Hopkins
 	Coraid, Inc.
+	
+	John Sharratt
+	Tokera Ltd.
 
 Address support requests to
-aoetools-discuss@lists.sourceforge.net.
+	aoetools-discuss@lists.sourceforge.net.
+	support@tokera.com
 
 Thanks to Lelik P. Korchagin for writing the first
 kernel vblade module.  It was quite helpful as a
 reference implementation.
+
+Thanks to Sam. Hopkins for providing the original version
+those many years ago.
 
 ---
 
