@@ -247,6 +247,7 @@ static void announce(struct aoedev *d, struct aoethread* t) {
 
 static ssize_t kvblade_add(u32 major, u32 minor, char *ifname, char *path) {
     struct net_device *nd;
+    struct net* ns;
     struct block_device *bd;
     struct aoedev *d, *td;
     int ret = 0;
@@ -257,8 +258,16 @@ static ssize_t kvblade_add(u32 major, u32 minor, char *ifname, char *path) {
     printk("kvblade_add\n");
     nd = dev_get_by_name(&init_net, ifname);
     if (nd == NULL) {
-        eprintk("add failed: interface %s not found.\n", ifname);
-        return -ENOENT;
+        rcu_read_lock();
+        for_each_net_rcu(ns) {
+            nd = dev_get_by_name_rcu(ns, ifname);
+            if (nd != NULL) break;
+        }
+        rcu_read_unlock();
+        if (nd == NULL) {
+            eprintk("add failed: interface %s not found.\n", ifname);
+            return -ENOENT;
+        }
     }
     dev_put(nd);
 
