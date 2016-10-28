@@ -970,7 +970,7 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
         rskb = make_response(skb, d->major, d->minor);
         if (rskb == NULL) {
             dt->busy--;
-            break;
+            goto free_out;
         }
 
         switch (aoe->cmd) {
@@ -989,11 +989,14 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
         if (rskb) {
             skb_queue_tail(&t->skb_outq, rskb); 
         }
+        
+        // Reduced the busy count which will allow the device
+        // to be destroyed
+        dt->busy--;
 
         // If its a specific address then we are finished
         if (major == d->major && minor == d->minor) {
-            dt->busy--;
-            return;
+            goto free_out;
         }
         
         // Otherwise we need to resume where we left off
@@ -1004,17 +1007,12 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
                 break;
             }
         }
-        if (d2 == NULL) {
-            dt->busy--;
+        if (d2 == NULL)
             break;
-        }
-        
-        // Reduced the busy count which will allow the device
-        // to be destroyed
-        dt->busy--;
     }
     rcu_read_unlock();
 
+free_out:
     // We are finished with the buffer
     dev_kfree_skb(skb);
 }
