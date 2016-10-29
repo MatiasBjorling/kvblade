@@ -1104,7 +1104,7 @@ static int __init kvblade_module_init(void) {
         init_completion(&t->ktrendez);
         init_waitqueue_head(&t->ktwaitq);
 
-        t->task = kthread_create_on_cpu(kthread, t, n, "kvblade(%d)");
+        t->task = kthread_create_on_cpu(kthread, t, n, "kvblade(%d)", n);
         if (t->task == NULL || IS_ERR(t->task))
             return -EAGAIN;
         
