@@ -402,7 +402,6 @@ static ssize_t kvblade_del(u32 major, u32 minor, char *ifname) {
         ret = -EBUSY;
         goto err;
     }
-
     hlist_del_rcu(&d->node);
     rcu_read_unlock();
     
@@ -999,14 +998,16 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
             goto free_out;
         }
         
-        // Otherwise we need to resume where we left off
-        // (if the buffer changes during this stage [which is very unlikely] then the broadcast will abort)
+        // Otherwise we need to resume where we left off, so lets make sure the entry is still there
         rcu_read_lock();
         hlist_for_each_entry_rcu_notrace(d2, &root.devlist, node) {
             if (d2 == d) {
                 break;
             }
         }
+        
+        // Oh no! Its gone (although this was very unlikely to occur the list was modified during a broadcast packet)
+        // we will take the only sane action we can and abort processing the broadcast packet
         if (d2 == NULL)
             break;
     }
