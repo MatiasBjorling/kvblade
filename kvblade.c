@@ -1109,6 +1109,8 @@ static int __init kvblade_module_init(void) {
         if (t->task == NULL || IS_ERR(t->task))
             return -EAGAIN;
         
+        kthread_bind(t->task, n);
+        
         if (t->task == current)
             set_current_state(TASK_RUNNING);
         else if (t->task != NULL)
