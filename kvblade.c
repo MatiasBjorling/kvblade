@@ -550,6 +550,12 @@ static ssize_t store_sn(struct aoedev *dev, const char *page, size_t len) {
 
 static struct kvblade_sysfs_entry kvblade_sysfs_sn = __ATTR(sn, 0644, show_sn, store_sn);
 
+static ssize_t show_mtu(struct aoedev *dev, char *page) {
+    return sprintf(page, "%d\n", (int)(ata_maxsectors(dev) * KERNEL_SECTOR_SIZE));
+}
+
+static struct kvblade_sysfs_entry kvblade_sysfs_mtu = __ATTR(mtu, 0644, show_mtu, NULL);
+
 static struct attribute *kvblade_ktype_attrs[] = {
     &kvblade_sysfs_scnt.attr,
     &kvblade_sysfs_busy.attr,
@@ -557,6 +563,7 @@ static struct attribute *kvblade_ktype_attrs[] = {
     &kvblade_sysfs_bpath.attr,
     &kvblade_sysfs_model.attr,
     &kvblade_sysfs_sn.attr,
+    &kvblade_sysfs_mtu.attr,
     NULL,
 };
 
