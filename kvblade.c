@@ -990,24 +990,19 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
         dt = (struct aoedev_thread*)per_cpu_ptr(d->devthread_percpu, t->cpu);
         dt->busy++;
         
-        rcu_read_unlock();
-        
-        dt->busy--;
-        goto free_out;
-
         rskb = make_response(skb, d->major, d->minor);
         if (rskb == NULL) {
             dt->busy--;
-            goto free_out;
+            goto out;
         }
 
         switch (aoe->cmd) {
-            case AOECMD_ATA:
-                rskb = ata(d, t, rskb, skb);
-                break;
-            case AOECMD_CFG:
-                rskb = cfg(d, t, rskb, skb);
-                break;
+            //case AOECMD_ATA:
+            //    rskb = ata(d, t, rskb, skb);
+            //    break;
+            //case AOECMD_CFG:
+            //    rskb = cfg(d, t, rskb, skb);
+            //   break;
             default:
                 dev_kfree_skb(rskb);
                 rskb = NULL;
@@ -1021,29 +1016,18 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
         // If its a specific address then we are finished
         if (major == d->major && minor == d->minor) {
             dt->busy--;
-            goto free_out;
+            goto out;
         }
         
         // Reduced the busy count which will allow the device
         // to be destroyed
         dt->busy--;
-        
-        // Otherwise we need to resume where we left off, so lets make sure the entry is still there
-        rcu_read_lock();
-        hlist_for_each_entry_rcu_notrace(d2, &root.devlist, node) {
-            if (d2 == d) {
-                break;
-            }
-        }
-        
-        // Oh no! Its gone (although this was very unlikely to occur the list was modified during a broadcast packet)
-        // we will take the only sane action we can and abort processing the broadcast packet
-        if (d2 == NULL)
-            break;
     }
-    rcu_read_unlock();
 
-free_out:
+out:
+    // We need to leave the RCU
+    rcu_read_unlock();
+                
     // We are finished with the buffer
     dev_kfree_skb(skb);
 }
