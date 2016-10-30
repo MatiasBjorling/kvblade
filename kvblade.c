@@ -211,12 +211,15 @@ static int count_busy(struct aoedev *d) {
 
 static void __wake(struct aoethread* t, int cpu)
 {    
+    wake_up_process(t->task);
+    /*
     if (t->cpu == cpu) {
-        t->task->state = TASK_RUNNING;
+        set_task_state(t->task, TASK_RUNNING);
     }
     else {
-        wake_up_process(t->task);
+        
     }
+    */
 }
 
 static void wake(struct aoethread* t)
