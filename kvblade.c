@@ -769,6 +769,32 @@ static struct bio* rq_init_bio(struct aoereq *rq)
     return bio;
 }
 
+static void ata_add_pages(struct aoe_atahdr *ata, struct bio *bio) {
+    unsigned int offset = 0;
+    unsigned int len = ata->scnt << 9;
+    
+    for (;offset < len;)
+    {
+        unsigned char*  pdata = ata->data + offset;
+        struct page*    page = virt_to_page(pdata);
+        unsigned int    poff = offset_in_page(pdata);
+        
+        unsigned int sub = len - offset;
+        if (poff + sub > PAGE_SIZE)
+            sub = PAGE_SIZE - poff;
+        
+        if (bio_add_page(bio,
+                         page,
+                         sub,
+                         poff) < sub)
+            return FALSE;
+        
+        offset += sub;
+    }
+    
+    return TRUE;
+}
+
 static struct sk_buff * ata(struct aoedev *d, struct aoethread *t, struct sk_buff *skb, struct sk_buff *rcv) {
     struct aoe_hdr *aoe;
     struct aoe_atahdr *ata;
@@ -776,87 +802,78 @@ static struct sk_buff * ata(struct aoedev *d, struct aoethread *t, struct sk_buf
     struct aoedev_thread *dt;
     struct bio *bio;
     sector_t lba;
-    int len, rw;
-    struct page *page;
-    ulong bcnt, offset;
+    int len, rw;    
     
-    printk(KERN_INFO "ata: %Lu (%d), max %Lu\n", (long long) lba, ata->scnt, d->scnt);
-
     aoe = (struct aoe_hdr *) skb_mac_header(skb);
     ata = (struct aoe_atahdr *) aoe->data;
     lba = readlba(ata->lba);
     len = sizeof *aoe + sizeof *ata;
     switch (ata->cmdstat) {
-            do {
-                case ATA_CMD_PIO_READ:
-                lba &= ATA_LBA28MAX;
-                case ATA_CMD_PIO_READ_EXT:
-                lba &= 0x0000FFFFFFFFFFFFULL;
-                rw = READ;
-                break;
-                case ATA_CMD_PIO_WRITE:
-                lba &= ATA_LBA28MAX;
-                case ATA_CMD_PIO_WRITE_EXT:
-                lba &= 0x0000FFFFFFFFFFFFULL;
-                rw = WRITE;
-            } while (0);
-            
-            if ((lba + ata->scnt) > d->scnt) {
-                printk(KERN_ERR "sector I/O is out of range: %Lu (%d), max %Lu\n",
-                        (long long) lba, ata->scnt, d->scnt);
-                ata->cmdstat = ATA_ERR;
-                ata->errfeat = ATA_IDNF;
-                break;
-            }
+        do {
+            case ATA_CMD_PIO_READ:
+            lba &= ATA_LBA28MAX;
+            case ATA_CMD_PIO_READ_EXT:
+            lba &= 0x0000FFFFFFFFFFFFULL;
+            rw = READ;
+            break;
+            case ATA_CMD_PIO_WRITE:
+            lba &= ATA_LBA28MAX;
+            case ATA_CMD_PIO_WRITE_EXT:
+            lba &= 0x0000FFFFFFFFFFFFULL;
+            rw = WRITE;
+        } while (0);
 
-            rq = (aoereq_t*) kmem_cache_alloc_node(root.aoe_rq_cache, GFP_ATOMIC & ~__GFP_DMA, numa_node_id());
-            if (unlikely(rq == NULL)) {
-                printk(KERN_ERR "failed to allocate request obj\n");
-                ata->cmdstat = ATA_ERR;
-                ata->errfeat = ATA_ABORTED;
-                break;
-            }
-            prefetchw(rq);
+        if ((lba + ata->scnt) > d->scnt) {
+            trace_printk(KERN_ERR "sector I/O is out of range: %Lu (%d), max %Lu\n",
+                    (long long) lba, ata->scnt, d->scnt);
+            ata->cmdstat = ATA_ERR;
+            ata->errfeat = ATA_IDNF;
+            break;
+        }
 
-            bio = rq_init_bio(rq);
-            prefetchw(bio);
-            
-            rq->d = d;
-            rq->t = t;
-            
-            bio_sector(bio) = lba;
-            bio->bi_bdev = d->blkdev;
-            bio->bi_end_io = ata_io_complete;
-            bio->bi_private = rq;
-
-            page = virt_to_page(ata->data);
-            bcnt = ata->scnt << 9;
-            offset = offset_in_page(ata->data);
-
-            if (bio_add_page(bio, page, bcnt, offset) < bcnt) {
-                kmem_cache_free(root.aoe_rq_cache, rq);
-                printk(KERN_ERR "Can't bio_add_page for %d sectors\n", ata->scnt);
-                goto drop;
-            }
-
-            rq->skb = skb;
-            
-            dt = (struct aoedev_thread*)per_cpu_ptr(d->devthread_percpu, t->cpu);
-            dt->busy++;
-            
-            submit_bio(rw, bio);
-            return NULL;
-        default:
-            printk(KERN_ERR "Unknown ATA command 0x%02X\n", ata->cmdstat);
+        rq = (aoereq_t*) kmem_cache_alloc_node(root.aoe_rq_cache, GFP_ATOMIC & ~__GFP_DMA, numa_node_id());
+        if (unlikely(rq == NULL)) {
+            trace_printk(KERN_ERR "failed to allocate request obj\n");
             ata->cmdstat = ATA_ERR;
             ata->errfeat = ATA_ABORTED;
             break;
-        case ATA_CMD_ID_ATA:
-            len += ata_identify(d, ata);
-        case ATA_CMD_FLUSH:
-            ata->cmdstat = ATA_DRDY;
-            ata->errfeat = 0;
-            break;
+        }
+        prefetchw(rq);
+
+        bio = rq_init_bio(rq);
+        prefetchw(bio);
+
+        rq->d = d;
+        rq->t = t;
+        rq->skb = skb;
+
+        bio_sector(bio) = lba;
+        bio->bi_bdev = d->blkdev;
+        bio->bi_end_io = ata_io_complete;
+        bio->bi_private = rq;
+
+        if (ata_add_pages(ata, bio) == FALSE) {
+            kmem_cache_free(root.aoe_rq_cache, rq);
+            trace_printk(KERN_ERR "Can't bio_add_page for %d sectors\n", ata->scnt);
+            goto drop;
+        }
+
+        dt = (struct aoedev_thread*)per_cpu_ptr(d->devthread_percpu, t->cpu);
+        dt->busy++;
+
+        submit_bio(rw, bio);
+        return NULL;
+    default:
+        trace_printk(KERN_ERR "Unknown ATA command 0x%02X\n", ata->cmdstat);
+        ata->cmdstat = ATA_ERR;
+        ata->errfeat = ATA_ABORTED;
+        break;
+    case ATA_CMD_ID_ATA:
+        len += ata_identify(d, ata);
+    case ATA_CMD_FLUSH:
+        ata->cmdstat = ATA_DRDY;
+        ata->errfeat = 0;
+        break;
     }
     skb_trim(skb, len);
     return skb;
@@ -1012,9 +1029,9 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
         }
 
         switch (aoe->cmd) {
-            //case AOECMD_ATA:
-            //    rskb = ata(d, t, rskb, skb);
-            //    break;
+            case AOECMD_ATA:
+                rskb = ata(d, t, rskb, skb);
+                break;
             case AOECMD_CFG:
                 rskb = cfg(d, t, rskb, skb);
                 break;
