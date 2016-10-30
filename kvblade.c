@@ -992,7 +992,8 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
         
         rcu_read_unlock();
         
-        return;
+        dt->busy--;
+        goto free_out;
 
         rskb = make_response(skb, d->major, d->minor);
         if (rskb == NULL) {
