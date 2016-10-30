@@ -1055,7 +1055,7 @@ static int kthread(void* data) {
         } while (iskb || cskb || oskb);
     
         if (atomic_xchg(&t->announce_all, 0) > 0) {
-            printk(KERN_INFO "tokmodule: kvblade announce on cpu(%d)\n", smp_processor_id());
+            //printk(KERN_INFO "tokmodule: kvblade announce on cpu(%d)\n", smp_processor_id());
             ktannounce(t);
             continue;
         }        
