@@ -783,12 +783,12 @@ static int ata_add_pages(struct aoe_atahdr *ata, struct bio *bio) {
                          page,
                          sub,
                          poff) < sub)
-            return FALSE;
+            return 0;
         
         offset += sub;
     }
     
-    return TRUE;
+    return len;
 }
 
 static struct sk_buff * ata(struct aoedev *d, struct aoethread *t, struct sk_buff *skb, struct sk_buff *rcv) {
@@ -848,7 +848,7 @@ static struct sk_buff * ata(struct aoedev *d, struct aoethread *t, struct sk_buf
         bio->bi_end_io = ata_io_complete;
         bio->bi_private = rq;
 
-        if (ata_add_pages(ata, bio) == FALSE) {
+        if (ata_add_pages(ata, bio) <= 0) {
             kmem_cache_free(root.aoe_rq_cache, rq);
             trace_printk(KERN_ERR "Can't bio_add_page for %d sectors\n", ata->scnt);
             goto drop;
