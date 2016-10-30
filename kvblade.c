@@ -208,24 +208,17 @@ static int count_busy(struct aoedev *d) {
     return ret;
 }
 
-static void __wake(struct aoethread* t, int cpu)
+static void wake(struct aoethread* t)
 {    
     wake_up_process(t->task);
     /*
-    if (t->cpu == cpu) {
+    if (t->cpu == smp_processor_id()) {
         set_task_state(t->task, TASK_RUNNING);
     }
     else {
         wake_up_process(t->task);
     }
     */
-}
-
-static void wake(struct aoethread* t)
-{    
-    int cpu = get_cpu();
-    __wake(t, cpu);
-    put_cpu();
 }
 
 static void announce(struct aoedev *d, struct aoethread* t) {
@@ -368,10 +361,9 @@ static ssize_t kvblade_add(u32 major, u32 minor, char *ifname, char *path) {
     dprintk("added %s as %d.%d@%s: %Lu sectors.\n",
             path, major, minor, ifname, d->scnt);
 
-    cpu = get_cpu();
-    t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, cpu);
+    t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, get_cpu());
     atomic_set(&t->announce_all, 1);
-    __wake(t, cpu);
+    wake(t);
     put_cpu();
     
     return 0;
@@ -490,17 +482,11 @@ static ssize_t store_announce(struct aoedev *dev, const char *page, size_t len) 
     struct aoethread* t;
     int cpu;
 
-    p = kmalloc(len + 1, GFP_KERNEL);
-    memcpy(p, page, len);
-    p[len] = '\0';
-
-    cpu = get_cpu();
-    t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, cpu);
+    t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, get_cpu());
     atomic_set(&t->announce_all, 1);
-    __wake(t, cpu);
+    wake(t);
     put_cpu();
-
-    kfree(p);
+    
     return error ? error : len;
 }
 
@@ -686,14 +672,10 @@ static void ata_io_complete(struct bio *bio, int error) {
     prq = (struct aoereq **)(&skb->cb[0]);
     *prq = rq;
     
-    cpu = get_cpu();
-    t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, cpu);
-    
+    t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, get_cpu());
     rq->t = t;
-    rq->dt = (struct aoedev_thread*)per_cpu_ptr(rq->d->devthread_percpu, cpu);
-    
     skb_queue_tail(&t->skb_com, skb);
-    __wake(t, cpu);
+    wake(t);
     put_cpu();
     
     /*
@@ -975,10 +957,9 @@ static int rcv(struct sk_buff *skb, struct net_device *ndev, struct packet_type 
     aoe = (struct aoe_hdr *) skb_mac_header(skb);
     if (~aoe->verfl & AOEFL_RSP)
     {
-        int cpu = get_cpu();
-        t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, cpu);
+        t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, get_cpu());
         skb_queue_tail(&t->skb_inq, skb);
-        __wake(t, cpu);
+        wake(t);
         put_cpu();
         
     } else {
