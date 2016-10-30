@@ -369,7 +369,7 @@ static ssize_t kvblade_add(u32 major, u32 minor, char *ifname, char *path) {
     cpu = get_cpu();
     t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, cpu);
     atomic_set(&t->announce_all, 1);
-    __wake(t);
+    __wake(t, cpu);
     put_cpu();
     
     return 0;
