@@ -110,7 +110,6 @@ struct aoethread {
     atomic_t            announce_all;
     
     struct completion   ktrendez;
-    wait_queue_head_t   ktwaitq;
     struct task_struct* task;
     
 } __attribute__((packed)) __attribute__((aligned(8))) typedef aoethread_t;
@@ -349,7 +348,7 @@ static ssize_t kvblade_add(u32 major, u32 minor, char *ifname, char *path) {
 
     t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, get_cpu());
     atomic_set(&t->announce_all, 1);
-    wake_up(&t->ktwaitq);
+    wake_up_process(t->task);
     put_cpu();
     
     return 0;
@@ -473,7 +472,7 @@ static ssize_t store_announce(struct aoedev *dev, const char *page, size_t len) 
 
     t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, get_cpu());
     atomic_set(&t->announce_all, 1);
-    wake_up(&t->ktwaitq);
+    wake_up_process(t->task);
     put_cpu();
 
     kfree(p);
@@ -663,7 +662,7 @@ static void ata_io_complete(struct bio *bio, int error) {
     
     t = rq->t;
     skb_queue_tail(&t->skb_com, skb);
-    wake_up(&t->ktwaitq);
+    wake_up_process(t->task);
 }
 
 static void ktcom(struct aoethread* t, struct sk_buff *skb) {
@@ -935,7 +934,7 @@ static int rcv(struct sk_buff *skb, struct net_device *ndev, struct packet_type 
     {
         t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, get_cpu());
         skb_queue_tail(&t->skb_inq, skb);
-        wake_up(&t->ktwaitq);
+        wake_up_process(t->task);
         put_cpu();
         
     } else {
@@ -1043,7 +1042,7 @@ static int kthread(void* data) {
     printk(KERN_INFO "tokmodule: Started a new kvblade thread (%d)\n", smp_processor_id());
     
     do {
-        __set_current_state(TASK_RUNNING);
+        set_current_state(TASK_INTERRUPTIBLE);
         
         do {
             if ((iskb = skb_dequeue(&t->skb_inq)))
@@ -1059,12 +1058,9 @@ static int kthread(void* data) {
             printk(KERN_INFO "tokmodule: kvblade announce on cpu(%d)\n", smp_processor_id());
             ktannounce(t);
             continue;
-        }
+        }        
         
-        set_current_state(TASK_INTERRUPTIBLE);
-        add_wait_queue(&t->ktwaitq, &wait);
         schedule();
-        remove_wait_queue(&t->ktwaitq, &wait);
         
     } while (!kthread_should_stop());
     
@@ -1105,7 +1101,6 @@ static int __init kvblade_module_init(void) {
     
         memset(t, 0, sizeof(aoethread_t));
         init_completion(&t->ktrendez);
-        init_waitqueue_head(&t->ktwaitq);
 
         //t->task = kthread_create_on_cpu(kthread, t, n, "kvblade(%d)", n);
         t->task = kthread_create(kthread, t, "kvblade(%d)", n);
