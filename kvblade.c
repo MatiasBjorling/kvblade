@@ -161,13 +161,15 @@ static ssize_t kvblade_sysfs_args(char *p, char *argv[], int argv_max) {
     return argc;
 }
 
-static struct sk_buff * skb_new(struct net_device *dev, ulong len) {
+static struct sk_buff * skb_new(struct aoethread* t, struct net_device *dev, ulong len) {
     struct sk_buff *skb;
 
     if (len < ETH_ZLEN)
         len = ETH_ZLEN;
 
-    skb = __alloc_skb(len, GFP_ATOMIC & ~__GFP_DMA, SKB_ALLOC_FCLONE, numa_node_id());
+    skb = __alloc_skb(len, GFP_ATOMIC, SKB_ALLOC_FCLONE, numa_node_id());
+    if (!skb)
+        skb = __alloc_skb(len, GFP_ATOMIC & ~__GFP_DMA, SKB_ALLOC_FCLONE, numa_node_id());
     if (skb) {
         skb_reset_network_header(skb);
         skb_reset_mac_header(skb);
@@ -227,7 +229,7 @@ static void announce(struct aoedev *d, struct aoethread* t) {
     struct aoe_cfghdr *cfg;
     int len = sizeof(struct aoe_hdr) + sizeof(struct aoe_cfghdr) + d->nconfig;
     
-    skb = skb_new(d->netdev, len);
+    skb = skb_new(t, d->netdev, len);
     if (skb == NULL)
         return;
     
@@ -921,11 +923,11 @@ static void ktannounce(struct aoethread* t) {
     return;
 }
 
-static struct sk_buff* make_response(struct sk_buff *skb, int major, int minor) {
+static struct sk_buff* make_response(struct aoethread* t, struct sk_buff *skb, int major, int minor) {
     struct aoe_hdr *aoe;
     struct sk_buff *rskb;
 
-    rskb = skb_new(skb->dev, skb->dev->mtu);
+    rskb = skb_new(t, skb->dev, skb->dev->mtu);
     if (rskb == NULL)
         return NULL;
     aoe = (struct aoe_hdr *) skb_mac_header(rskb);
@@ -990,7 +992,7 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
         dt = (struct aoedev_thread*)per_cpu_ptr(d->devthread_percpu, t->cpu);
         dt->busy++;
         
-        rskb = make_response(skb, d->major, d->minor);
+        rskb = make_response(t, skb, d->major, d->minor);
         if (rskb == NULL) {
             dt->busy--;
             goto out;
