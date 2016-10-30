@@ -223,6 +223,19 @@ static void wake(struct aoethread* t)
     */
 }
 
+static int ata_maxsectors(struct aoedev *d) {
+    int ret = MAXSECTORS(d->netdev->mtu);
+    if (ret > 64)
+        ret = 64;
+    else if (ret > 32)
+        ret = 32;
+    else if (ret > 16)
+        ret = 16;
+    else if (ret > 8)
+        ret = 8;
+    return ret;
+}
+
 static void announce(struct aoedev *d, struct aoethread* t) {
     struct sk_buff* skb;
     struct aoe_hdr *aoe;
@@ -249,7 +262,7 @@ static void announce(struct aoedev *d, struct aoethread* t) {
     memset(cfg, 0, sizeof *cfg);
     cfg->bufcnt = cpu_to_be16(MAXBUFFERS);
     cfg->fwver = __constant_htons(0x0002);
-    cfg->scnt = MAXSECTORS(d->netdev->mtu);
+    cfg->scnt = ata_maxsectors(d);
     cfg->aoeccmd = AOE_HVER;
 
     if (d->nconfig) {
@@ -864,7 +877,7 @@ static struct sk_buff* cfg(struct aoedev *d, struct aoethread *t, struct sk_buff
     len = sizeof *aoe;
 
     cfg->bufcnt = htons(MAXBUFFERS);
-    cfg->scnt = MAXSECTORS(d->netdev->mtu);
+    cfg->scnt = ata_maxsectors(d);
     cfg->fwver = __constant_htons(0x0002);
     cfg->aoeccmd = AOE_HVER;
 
