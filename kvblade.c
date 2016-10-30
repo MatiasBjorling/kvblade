@@ -112,6 +112,8 @@ struct aoethread {
     struct completion   ktrendez;
     struct task_struct* task;
     
+    int                 cpu;
+    
 } __attribute__((packed)) __attribute__((aligned(8))) typedef aoethread_t;
 
 struct core
@@ -207,6 +209,23 @@ static int count_busy(struct aoedev *d) {
     return ret;
 }
 
+static void __wake(struct aoethread* t, int cpu)
+{    
+    if (t->cpu == cpu) {
+        t->task->state = TASK_RUNNING;
+    }
+    else {
+        wake_up_process(t->task);
+    }
+}
+
+static void wake(struct aoethread* t)
+{    
+    int cpu = get_cpu();
+    __wake(t, cpu);
+    put_cpu();
+}
+
 static void announce(struct aoedev *d, struct aoethread* t) {
     struct sk_buff* skb;
     struct aoe_hdr *aoe;
@@ -253,6 +272,7 @@ static ssize_t kvblade_add(u32 major, u32 minor, char *ifname, char *path) {
     struct aoethread* t;
     int n;
     struct aoedev_thread* dt;
+    int cpu;
     
     printk("kvblade_add\n");
     nd = dev_get_by_name(&init_net, ifname);
@@ -346,9 +366,10 @@ static ssize_t kvblade_add(u32 major, u32 minor, char *ifname, char *path) {
     dprintk("added %s as %d.%d@%s: %Lu sectors.\n",
             path, major, minor, ifname, d->scnt);
 
-    t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, get_cpu());
+    cpu = get_cpu();
+    t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, cpu);
     atomic_set(&t->announce_all, 1);
-    wake_up_process(t->task);
+    __wake(t);
     put_cpu();
     
     return 0;
@@ -465,14 +486,16 @@ static ssize_t store_announce(struct aoedev *dev, const char *page, size_t len) 
     int error = 0;
     char *p;
     struct aoethread* t;
+    int cpu;
 
     p = kmalloc(len + 1, GFP_KERNEL);
     memcpy(p, page, len);
     p[len] = '\0';
 
-    t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, get_cpu());
+    cpu = get_cpu();
+    t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, cpu);
     atomic_set(&t->announce_all, 1);
-    wake_up_process(t->task);
+    __wake(t, cpu);
     put_cpu();
 
     kfree(p);
@@ -652,6 +675,7 @@ static void ata_io_complete(struct bio *bio, int error) {
     struct aoethread *t;
     struct aoereq *rq, **prq;
     struct sk_buff *skb;
+    int cpu;
     
     rq = bio->bi_private;
     rq->err = error;
@@ -660,9 +684,21 @@ static void ata_io_complete(struct bio *bio, int error) {
     prq = (struct aoereq **)(&skb->cb[0]);
     *prq = rq;
     
+    cpu = get_cpu();
+    t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, cpu);
+    
+    rq->t = t;
+    rq->dt = (struct aoedev_thread*)per_cpu_ptr(rq->d->devthread_percpu, cpu);
+    
+    skb_queue_tail(&t->skb_com, skb);
+    __wake(t, cpu);
+    put_cpu();
+    
+    /*
     t = rq->t;
     skb_queue_tail(&t->skb_com, skb);
-    wake_up_process(t->task);
+    wake(t);
+    */
 }
 
 static void ktcom(struct aoethread* t, struct sk_buff *skb) {
@@ -934,9 +970,10 @@ static int rcv(struct sk_buff *skb, struct net_device *ndev, struct packet_type 
     aoe = (struct aoe_hdr *) skb_mac_header(skb);
     if (~aoe->verfl & AOEFL_RSP)
     {
-        t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, get_cpu());
+        int cpu = get_cpu();
+        t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, cpu);
         skb_queue_tail(&t->skb_inq, skb);
-        wake_up_process(t->task);
+        __wake(t, cpu);
         put_cpu();
         
     } else {
@@ -1109,13 +1146,9 @@ static int __init kvblade_module_init(void) {
         if (t->task == NULL || IS_ERR(t->task))
             return -EAGAIN;
         
-        kthread_bind(t->task, n);
-        
-        if (t->task == current)
-            set_current_state(TASK_RUNNING);
-        else if (t->task != NULL)
-            wake_up_process(t->task);
-    
+        t->cpu = n;
+        kthread_bind(t->task, n);        
+        wake_up_process(t->task);    
         wait_for_completion(&t->ktrendez);
         init_completion(&t->ktrendez); // for exit
     }
