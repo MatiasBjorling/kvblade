@@ -1002,9 +1002,9 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
             //case AOECMD_ATA:
             //    rskb = ata(d, t, rskb, skb);
             //    break;
-            //case AOECMD_CFG:
-            //    rskb = cfg(d, t, rskb, skb);
-            //   break;
+            case AOECMD_CFG:
+                rskb = cfg(d, t, rskb, skb);
+                break;
             default:
                 dev_kfree_skb(rskb);
                 rskb = NULL;
