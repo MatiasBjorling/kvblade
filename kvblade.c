@@ -349,6 +349,7 @@ static ssize_t kvblade_add(u32 major, u32 minor, char *ifname, char *path) {
 
     t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, get_cpu());
     atomic_set(&t->announce_all, 1);
+    wake_up(&t->ktwaitq);
     put_cpu();
     
     return 0;
@@ -472,6 +473,7 @@ static ssize_t store_announce(struct aoedev *dev, const char *page, size_t len) 
 
     t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, get_cpu());
     atomic_set(&t->announce_all, 1);
+    wake_up(&t->ktwaitq);
     put_cpu();
 
     kfree(p);
@@ -661,7 +663,7 @@ static void ata_io_complete(struct bio *bio, int error) {
     
     t = rq->t;
     skb_queue_tail(&t->skb_com, skb);
-    wake_up(&t->ktwaitq);;
+    wake_up(&t->ktwaitq);
 }
 
 static void ktcom(struct aoethread* t, struct sk_buff *skb) {
