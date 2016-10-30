@@ -54,7 +54,6 @@ struct aoereq {
     struct sk_buff *skb;    // Reference to the packet that initiated the request
     struct aoedev *d;       // Reference to the device that the request will be actioned on
     struct aoethread* t;    // Reference to the thread thats processing this command
-    struct aoedev_thread* dt;   // Reference to the structure used for data that relates to both the device and the thread
     int err;
     
     struct bio bio;         // The BIO structure is cached in the AOE request to minimize the calls to memory allocation
@@ -724,7 +723,6 @@ static void ktcom(struct aoethread* t, struct sk_buff *skb) {
         bytes = bio->bi_io_vec[0].bv_len;
 
     d = rq->d;
-    dt = rq->dt;
     
     aoe = (struct aoe_hdr *) skb_mac_header(skb);
     ata = (struct aoe_atahdr *) aoe->data;
@@ -745,6 +743,8 @@ static void ktcom(struct aoethread* t, struct sk_buff *skb) {
 
     rq->skb = NULL;
     kmem_cache_free(root.aoe_rq_cache, rq);
+    
+    dt = (struct aoedev_thread*)per_cpu_ptr(d->devthread_percpu, t->cpu);
     dt->busy--;
 
     skb_trim(skb, len);
@@ -776,6 +776,7 @@ static struct sk_buff * ata(struct aoedev *d, struct aoethread *t, struct sk_buf
     struct aoe_hdr *aoe;
     struct aoe_atahdr *ata;
     struct aoereq *rq;
+    struct aoedev_thread *dt;
     struct bio *bio;
     sector_t lba;
     int len, rw;
@@ -825,8 +826,7 @@ static struct sk_buff * ata(struct aoedev *d, struct aoethread *t, struct sk_buf
             
             rq->d = d;
             rq->t = t;
-            rq->dt = (struct aoedev_thread*)per_cpu_ptr(d->devthread_percpu, smp_processor_id());
-
+            
             bio_sector(bio) = lba;
             bio->bi_bdev = d->blkdev;
             bio->bi_end_io = ata_io_complete;
@@ -843,7 +843,9 @@ static struct sk_buff * ata(struct aoedev *d, struct aoethread *t, struct sk_buf
             }
 
             rq->skb = skb;
-            rq->dt->busy++;
+            
+            dt = (struct aoedev_thread*)per_cpu_ptr(d->devthread_percpu, t->cpu);
+            dt->busy++;
             
             submit_bio(rw, bio);
             return NULL;
@@ -993,8 +995,6 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
     struct aoe_hdr *aoe;
     int major, minor;
     
-    return;
-
     aoe = (struct aoe_hdr *) skb_mac_header(skb);
     major = be16_to_cpu(aoe->major);
     minor = aoe->minor;
@@ -1006,10 +1006,12 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
                 (skb->dev != d->netdev))
             continue;
         
-        dt = (struct aoedev_thread*)per_cpu_ptr(d->devthread_percpu, smp_processor_id());
+        dt = (struct aoedev_thread*)per_cpu_ptr(d->devthread_percpu, t->cpu);
         dt->busy++;
         
         rcu_read_unlock();
+        
+        return;
 
         rskb = make_response(skb, d->major, d->minor);
         if (rskb == NULL) {
@@ -1033,15 +1035,16 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
         if (rskb) {
             skb_queue_tail(&t->skb_outq, rskb); 
         }
+
+        // If its a specific address then we are finished
+        if (major == d->major && minor == d->minor) {
+            dt->busy--;
+            goto free_out;
+        }
         
         // Reduced the busy count which will allow the device
         // to be destroyed
         dt->busy--;
-
-        // If its a specific address then we are finished
-        if (major == d->major && minor == d->minor) {
-            goto free_out;
-        }
         
         // Otherwise we need to resume where we left off, so lets make sure the entry is still there
         rcu_read_lock();
