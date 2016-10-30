@@ -282,7 +282,6 @@ static ssize_t kvblade_add(u32 major, u32 minor, char *ifname, char *path) {
     struct aoethread* t;
     int n;
     struct aoedev_thread* dt;
-    int cpu;
     
     printk("kvblade_add\n");
     nd = dev_get_by_name(&init_net, ifname);
@@ -493,9 +492,7 @@ static struct kvblade_sysfs_entry kvblade_sysfs_del = __ATTR(del, 0644, NULL, st
 
 static ssize_t store_announce(struct aoedev *dev, const char *page, size_t len) {
     int error = 0;
-    char *p;
     struct aoethread* t;
-    int cpu;
 
     t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, get_cpu());
     atomic_set(&t->announce_all, 1);
@@ -678,7 +675,6 @@ static void ata_io_complete(struct bio *bio, int error) {
     struct aoethread *t;
     struct aoereq *rq, **prq;
     struct sk_buff *skb;
-    int cpu;
     
     rq = bio->bi_private;
     rq->err = error;
@@ -769,7 +765,7 @@ static struct bio* rq_init_bio(struct aoereq *rq)
     return bio;
 }
 
-static void ata_add_pages(struct aoe_atahdr *ata, struct bio *bio) {
+static int ata_add_pages(struct aoe_atahdr *ata, struct bio *bio) {
     unsigned int offset = 0;
     unsigned int len = ata->scnt << 9;
     
@@ -802,7 +798,7 @@ static struct sk_buff * ata(struct aoedev *d, struct aoethread *t, struct sk_buf
     struct aoedev_thread *dt;
     struct bio *bio;
     sector_t lba;
-    int len, rw;    
+    int len, rw;
     
     aoe = (struct aoe_hdr *) skb_mac_header(skb);
     ata = (struct aoe_atahdr *) aoe->data;
@@ -1003,7 +999,7 @@ static int rcv(struct sk_buff *skb, struct net_device *ndev, struct packet_type 
 
 static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
     struct sk_buff *rskb;
-    struct aoedev *d, *d2;
+    struct aoedev *d;
     struct aoedev_thread *dt;
     struct aoe_hdr *aoe;
     int major, minor;
@@ -1068,7 +1064,6 @@ static int kthread(void* data) {
     struct sk_buff *iskb, *oskb, *cskb;
     struct aoethread* t = (struct aoethread*)data;
     
-    DECLARE_WAITQUEUE(wait, current);
     sigset_t blocked;
     
     skb_queue_head_init(&t->skb_outq);
