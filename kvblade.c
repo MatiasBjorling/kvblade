@@ -742,6 +742,8 @@ static struct sk_buff * ata(struct aoedev *d, struct aoethread *t, struct sk_buf
     int len, rw;
     struct page *page;
     ulong bcnt, offset;
+    
+    printk(KERN_INFO "ata: %Lu (%d), max %Lu\n", (long long) lba, ata->scnt, d->scnt);
 
     aoe = (struct aoe_hdr *) skb_mac_header(skb);
     ata = (struct aoe_atahdr *) aoe->data;
