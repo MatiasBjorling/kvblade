@@ -201,32 +201,28 @@ static int count_busy(struct aoedev *d) {
     
     int ret =0;
     for (n = 0; n < num_online_cpus(); n++) {
-        dt = (struct aoedev_thread*)per_cpu_ptr(d->devthread_percpu, n);
-        
-        pbusy = (volatile int*)&dt->busy;
-        ret += *pbusy;
+        if (d->devthread_percpu != NULL) {
+            dt = (struct aoedev_thread*)per_cpu_ptr(d->devthread_percpu, n);
+            if (dt != NULL) {
+                pbusy = (volatile int*)&dt->busy;
+                ret += *pbusy;
+            }
+        }
     }
     return ret;
 }
 
-static void __wake(struct aoethread* t, int cpu)
+static void wake(struct aoethread* t)
 {    
     wake_up_process(t->task);
     /*
-    if (t->cpu == cpu) {
+    if (t->cpu == smp_processor_id()) {
         set_task_state(t->task, TASK_RUNNING);
     }
     else {
-        
+        wake_up_process(t->task);
     }
     */
-}
-
-static void wake(struct aoethread* t)
-{    
-    int cpu = get_cpu();
-    __wake(t, cpu);
-    put_cpu();
 }
 
 static void announce(struct aoedev *d, struct aoethread* t) {
@@ -357,8 +353,12 @@ static ssize_t kvblade_add(u32 major, u32 minor, char *ifname, char *path) {
     }
     
     for (n = 0; n < num_online_cpus(); n++) {
-        dt = (struct aoedev_thread*)per_cpu_ptr(d->devthread_percpu, n);
-        memset(dt, 0, sizeof(struct aoedev_thread));
+        if (d->devthread_percpu != NULL) {
+            dt = (struct aoedev_thread*)per_cpu_ptr(d->devthread_percpu, n);
+            if (dt != NULL) {
+                memset(dt, 0, sizeof(struct aoedev_thread));
+            }
+        }
     }
 
     kobject_init_and_add(&d->kobj, &kvblade_ktype, &root.kvblade_kobj, "%d.%d@%s", major, minor, ifname);
@@ -369,11 +369,15 @@ static ssize_t kvblade_add(u32 major, u32 minor, char *ifname, char *path) {
     dprintk("added %s as %d.%d@%s: %Lu sectors.\n",
             path, major, minor, ifname, d->scnt);
 
-    cpu = get_cpu();
-    t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, cpu);
-    atomic_set(&t->announce_all, 1);
-    __wake(t, cpu);
-    put_cpu();
+    if (root.thread_percpu != NULL) {
+        cpu = get_cpu();
+        t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, cpu);
+        if (t != NULL) {
+            atomic_set(&t->announce_all, 1);
+            wake(t);
+        }
+        put_cpu();
+    }
     
     return 0;
 err:
@@ -495,11 +499,15 @@ static ssize_t store_announce(struct aoedev *dev, const char *page, size_t len) 
     memcpy(p, page, len);
     p[len] = '\0';
 
-    cpu = get_cpu();
-    t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, cpu);
-    atomic_set(&t->announce_all, 1);
-    __wake(t, cpu);
-    put_cpu();
+    if (root.thread_percpu != NULL) {
+        cpu = get_cpu();
+        t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, cpu);
+        if (t != NULL) {
+            atomic_set(&t->announce_all, 1);
+            wake(t);
+        }
+        put_cpu();
+    }
 
     kfree(p);
     return error ? error : len;
@@ -687,15 +695,18 @@ static void ata_io_complete(struct bio *bio, int error) {
     prq = (struct aoereq **)(&skb->cb[0]);
     *prq = rq;
     
-    cpu = get_cpu();
-    t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, cpu);
-    
-    rq->t = t;
-    rq->dt = (struct aoedev_thread*)per_cpu_ptr(rq->d->devthread_percpu, cpu);
-    
-    skb_queue_tail(&t->skb_com, skb);
-    __wake(t, cpu);
-    put_cpu();
+    if (root.thread_percpu != NULL) {
+        cpu = get_cpu();
+        t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, cpu);
+        if (t != NULL) {
+            rq->t = t;
+            rq->dt = (struct aoedev_thread*)per_cpu_ptr(rq->d->devthread_percpu, cpu);
+
+            skb_queue_tail(&t->skb_com, skb);
+            wake(t);
+        }
+        put_cpu();
+    }
     
     /*
     t = rq->t;
@@ -825,7 +836,10 @@ static struct sk_buff * ata(struct aoedev *d, struct aoethread *t, struct sk_buf
             
             rq->d = d;
             rq->t = t;
-            rq->dt = (struct aoedev_thread*)per_cpu_ptr(d->devthread_percpu, smp_processor_id());
+            
+            if (d->devthread_percpu != NULL) {
+                rq->dt = (struct aoedev_thread*)per_cpu_ptr(d->devthread_percpu, smp_processor_id());
+            }
 
             bio_sector(bio) = lba;
             bio->bi_bdev = d->blkdev;
@@ -973,11 +987,15 @@ static int rcv(struct sk_buff *skb, struct net_device *ndev, struct packet_type 
     aoe = (struct aoe_hdr *) skb_mac_header(skb);
     if (~aoe->verfl & AOEFL_RSP)
     {
-        int cpu = get_cpu();
-        t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, cpu);
-        skb_queue_tail(&t->skb_inq, skb);
-        __wake(t, cpu);
-        put_cpu();
+        if (root.thread_percpu != NULL) {
+            int cpu = get_cpu();
+            t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, cpu);
+            if (t != NULL) {
+                skb_queue_tail(&t->skb_inq, skb);
+                wake(t);
+            }
+            put_cpu();
+        }
         
     } else {
         dev_kfree_skb(skb);
@@ -1004,8 +1022,12 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
                 (skb->dev != d->netdev))
             continue;
         
-        dt = (struct aoedev_thread*)per_cpu_ptr(d->devthread_percpu, smp_processor_id());
-        dt->busy++;
+        if (d->devthread_percpu != NULL) {
+            dt = (struct aoedev_thread*)per_cpu_ptr(d->devthread_percpu, smp_processor_id());
+            if (dt != NULL) {
+                dt->busy++;
+            }
+        }
         
         rcu_read_unlock();
 
@@ -1086,6 +1108,12 @@ static int kthread(void* data) {
     do {
         set_current_state(TASK_INTERRUPTIBLE);
         
+        if (atomic_xchg(&t->announce_all, 0) > 0) {
+            //printk(KERN_INFO "tokmodule: kvblade announce on cpu(%d)\n", smp_processor_id());
+            ktannounce(t);
+            continue;
+        }
+        
         do {
             if ((iskb = skb_dequeue(&t->skb_inq)))
                 ktrcv(t, iskb);
@@ -1095,12 +1123,6 @@ static int kthread(void* data) {
                 dev_queue_xmit(oskb);
             
         } while (iskb || cskb || oskb);
-    
-        if (atomic_xchg(&t->announce_all, 0) > 0) {
-            //printk(KERN_INFO "tokmodule: kvblade announce on cpu(%d)\n", smp_processor_id());
-            ktannounce(t);
-            continue;
-        }        
         
         schedule();
         
@@ -1139,21 +1161,26 @@ static int __init kvblade_module_init(void) {
     kobject_init_and_add(&root.kvblade_kobj, &kvblade_ktype_ops, NULL, "kvblade");
 
     for (n = 0; n < num_online_cpus(); n++) {
-        t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, n);
-    
-        memset(t, 0, sizeof(aoethread_t));
-        init_completion(&t->ktrendez);
+        if (root.thread_percpu != NULL) {
+            
+            t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, n);
+            if (t != NULL) {
+                
+                memset(t, 0, sizeof(aoethread_t));
+                init_completion(&t->ktrendez);
 
-        //t->task = kthread_create_on_cpu(kthread, t, n, "kvblade(%d)", n);
-        t->task = kthread_create(kthread, t, "kvblade(%d)", n);
-        if (t->task == NULL || IS_ERR(t->task))
-            return -EAGAIN;
-        
-        t->cpu = n;
-        kthread_bind(t->task, n);        
-        wake_up_process(t->task);    
-        wait_for_completion(&t->ktrendez);
-        init_completion(&t->ktrendez); // for exit
+                //t->task = kthread_create_on_cpu(kthread, t, n, "kvblade(%d)", n);
+                t->task = kthread_create(kthread, t, "kvblade(%d)", n);
+                if (t->task == NULL || IS_ERR(t->task))
+                    return -EAGAIN;
+
+                t->cpu = n;
+                kthread_bind(t->task, n);        
+                wake_up_process(t->task);    
+                wait_for_completion(&t->ktrendez);
+                init_completion(&t->ktrendez); // for exit
+            }
+        }
     }
 
     dev_add_pack(&pt);
@@ -1184,9 +1211,13 @@ static __exit void kvblade_module_exit(void) {
     
     for (n = 0; n < num_online_cpus(); n++)
     {
-        t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, n);
-        kthread_stop(t->task);
-        wait_for_completion(&t->ktrendez);
+        if (root.thread_percpu != NULL) {
+            t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, n);
+            if (t != NULL) {
+                kthread_stop(t->task);
+                wait_for_completion(&t->ktrendez);
+            }
+        }
     }
     
     kobject_del(&root.kvblade_kobj);
