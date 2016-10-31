@@ -991,8 +991,12 @@ static int rcv(struct sk_buff *skb, struct net_device *ndev, struct packet_type 
     if (~aoe->verfl & AOEFL_RSP)
     {
         t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, get_cpu());
-        skb_queue_tail(&t->skb_inq, skb);
-        wake(t);
+        if (in_interrupt()) {
+            skb_queue_tail(&t->skb_inq, skb);
+            wake(t);
+        } else {
+            ktrcv(t, skb);
+        }
         put_cpu();
         
     } else {
