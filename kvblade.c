@@ -211,16 +211,14 @@ static int count_busy(struct aoedev *d) {
 }
 
 static void wake(struct aoethread* t)
-{    
-    wake_up_process(t->task);
-    /*
+{
     if (t->cpu == smp_processor_id()) {
-        set_task_state(t->task, TASK_RUNNING);
+        if (t->task->state == TASK_INTERRUPTIBLE)
+            wake_up_process(t->task);
     }
     else {
         wake_up_process(t->task);
     }
-    */
 }
 
 static int ata_maxsectors(struct aoedev *d) {
