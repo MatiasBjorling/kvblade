@@ -973,39 +973,6 @@ static struct sk_buff* make_response(struct aoethread* t, struct sk_buff *skb, i
     return rskb;
 }
 
-static int rcv(struct sk_buff *skb, struct net_device *ndev, struct packet_type *pt, struct net_device *orig_dev) {
-    struct aoethread* t;
-    struct aoe_hdr *aoe;
-
-    skb = skb_share_check(skb, GFP_ATOMIC);
-    if (skb == NULL)
-        return -ENOMEM;
-
-    if (skb_linearize(skb) < 0) {
-        dev_kfree_skb(skb);
-        return -ENOMEM;
-    }
-    skb_push(skb, ETH_HLEN);
-
-    aoe = (struct aoe_hdr *) skb_mac_header(skb);
-    if (~aoe->verfl & AOEFL_RSP)
-    {
-        t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, get_cpu());
-        if (in_interrupt()) {
-            skb_queue_tail(&t->skb_inq, skb);
-            wake(t);
-        } else {
-            ktrcv(t, skb);
-        }
-        put_cpu();
-        
-    } else {
-        dev_kfree_skb(skb);
-    }
-
-    return 0;
-}
-
 static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
     struct sk_buff *rskb;
     struct aoedev *d;
@@ -1067,6 +1034,39 @@ out:
                 
     // We are finished with the buffer
     dev_kfree_skb(skb);
+}
+
+static int rcv(struct sk_buff *skb, struct net_device *ndev, struct packet_type *pt, struct net_device *orig_dev) {
+    struct aoethread* t;
+    struct aoe_hdr *aoe;
+
+    skb = skb_share_check(skb, GFP_ATOMIC);
+    if (skb == NULL)
+        return -ENOMEM;
+
+    if (skb_linearize(skb) < 0) {
+        dev_kfree_skb(skb);
+        return -ENOMEM;
+    }
+    skb_push(skb, ETH_HLEN);
+
+    aoe = (struct aoe_hdr *) skb_mac_header(skb);
+    if (~aoe->verfl & AOEFL_RSP)
+    {
+        t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, get_cpu());
+        if (in_interrupt()) {
+            skb_queue_tail(&t->skb_inq, skb);
+            wake(t);
+        } else {
+            ktrcv(t, skb);
+        }
+        put_cpu();
+        
+    } else {
+        dev_kfree_skb(skb);
+    }
+
+    return 0;
 }
 
 static int kthread(void* data) {
