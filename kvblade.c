@@ -681,29 +681,6 @@ static int ata_identify(struct aoedev *d, struct aoe_atahdr *ata) {
     return 512;
 }
 
-static void ata_io_complete(struct bio *bio, int error) {
-    struct aoethread *t;
-    struct aoereq *rq, **prq;
-    struct sk_buff *skb;
-    
-    rq = bio->bi_private;
-    rq->err = error;
-    skb = rq->skb;
-    
-    prq = (struct aoereq **)(&skb->cb[0]);
-    *prq = rq;
-    
-    t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, get_cpu());
-    rq->t = t;
-    if (in_interrupt()) {
-        skb_queue_tail(&t->skb_com, skb);
-        wake(t);
-    } else {
-        ktcom(t, cskb);
-    }
-    put_cpu();
-}
-
 static void ktcom(struct aoethread* t, struct sk_buff *skb) {
     struct aoereq *rq, **prq;
     struct aoedev *d;
@@ -750,6 +727,29 @@ static void ktcom(struct aoethread* t, struct sk_buff *skb) {
 
     skb_trim(skb, len);
     dev_queue_xmit(skb);
+}
+
+static void ata_io_complete(struct bio *bio, int error) {
+    struct aoethread *t;
+    struct aoereq *rq, **prq;
+    struct sk_buff *skb;
+    
+    rq = bio->bi_private;
+    rq->err = error;
+    skb = rq->skb;
+    
+    prq = (struct aoereq **)(&skb->cb[0]);
+    *prq = rq;
+    
+    t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, get_cpu());
+    rq->t = t;
+    if (in_interrupt()) {
+        skb_queue_tail(&t->skb_com, skb);
+        wake(t);
+    } else {
+        ktcom(t, cskb);
+    }
+    put_cpu();
 }
 
 static inline loff_t readlba(u8 *lba) {
