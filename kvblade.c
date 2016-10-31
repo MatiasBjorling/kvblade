@@ -747,7 +747,7 @@ static void ata_io_complete(struct bio *bio, int error) {
         skb_queue_tail(&t->skb_com, skb);
         wake(t);
     } else {
-        ktcom(t, cskb);
+        ktcom(t, skb);
     }
     put_cpu();
 }
