@@ -268,7 +268,12 @@ static void announce(struct aoedev *d, struct aoethread* t) {
         memcpy(cfg->data, d->config, d->nconfig);
     }
     
-    skb_queue_tail(&t->skb_outq, skb);
+    if (in_interrupt()) {
+        skb_queue_tail(&t->skb_outq, skb);
+        wake(t);
+    } else {
+        dev_queue_xmit(skb);
+    }
 }
 
 static ssize_t kvblade_add(u32 major, u32 minor, char *ifname, char *path) {
@@ -690,15 +695,13 @@ static void ata_io_complete(struct bio *bio, int error) {
     
     t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, get_cpu());
     rq->t = t;
-    skb_queue_tail(&t->skb_com, skb);
-    wake(t);
+    if (in_interrupt()) {
+        skb_queue_tail(&t->skb_com, skb);
+        wake(t);
+    } else {
+        ktcom(t, cskb);
+    }
     put_cpu();
-    
-    /*
-    t = rq->t;
-    skb_queue_tail(&t->skb_com, skb);
-    wake(t);
-    */
 }
 
 static void ktcom(struct aoethread* t, struct sk_buff *skb) {
@@ -1014,7 +1017,12 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
         }
         
         if (rskb) {
-            skb_queue_tail(&t->skb_outq, rskb); 
+            if (in_interrupt()) {
+                skb_queue_tail(&t->skb_outq, rskb); 
+                wake(t);
+            } else {
+                dev_queue_xmit(rskb);
+            }
         }
 
         // If its a specific address then we are finished
