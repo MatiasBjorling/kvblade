@@ -59,11 +59,11 @@ struct aoereq {
     struct bio bio;         // The BIO structure is cached in the AOE request to minimize the calls to memory allocation
     struct bio_vec bvl[MAXIOVECS];  // These must be placed together as the BIO implementation requires it
     
-} __attribute__((packed)) __attribute__((aligned(8))) typedef aoereq_t;
+} ____cacheline_aligned_in_smp typedef aoereq_t;
 
 struct aoedev_thread {
-    int                     busy;    
-} __attribute__((packed)) __attribute__((aligned(8))) typedef aoedev_thread_t;
+    atomic_t                busy;    
+} ____cacheline_aligned_in_smp typedef aoedev_thread_t;
 
 struct aoedev {
     
@@ -93,7 +93,7 @@ struct aoedev {
     
     struct rcu_head         rcu; // List head used to delay the release of this object till after RCU sync
     
-} __attribute__((packed)) __attribute__((aligned(8))) typedef aoedev_t;
+} ____cacheline_aligned_in_smp typedef aoedev_t;
 
 struct kvblade_sysfs_entry {
     struct attribute attr;
@@ -113,7 +113,7 @@ struct aoethread {
     
     int                 cpu;
     
-} __attribute__((packed)) __attribute__((aligned(8))) typedef aoethread_t;
+} ____cacheline_aligned_in_smp typedef aoethread_t;
 
 struct core
 {
@@ -124,7 +124,7 @@ struct core
     
     struct aoethread*   thread_percpu;
     
-} typedef core_t;
+} ____cacheline_aligned_in_smp typedef core_t;
 
 static core_t root;
 
@@ -203,9 +203,7 @@ static int count_busy(struct aoedev *d) {
     int ret =0;
     for (n = 0; n < num_online_cpus(); n++) {
         dt = (struct aoedev_thread*)per_cpu_ptr(d->devthread_percpu, n);
-        
-        pbusy = (volatile int*)&dt->busy;
-        ret += *pbusy;
+        ret += atomic_read(&dt->busy);
     }
     return ret;
 }
@@ -723,25 +721,36 @@ static void ktcom(struct aoethread* t, struct sk_buff *skb) {
     kmem_cache_free(root.aoe_rq_cache, rq);
     
     dt = (struct aoedev_thread*)per_cpu_ptr(d->devthread_percpu, t->cpu);
-    dt->busy--;
-
+    atomic_dec(&dt);
+    
     skb_trim(skb, len);
     dev_queue_xmit(skb);
 }
 
 static void ata_io_complete(struct bio *bio, int error) {
     struct aoethread *t;
+    struct aoedev* d;
+    struct aoedev_thread* dt;
     struct aoereq *rq, **prq;
     struct sk_buff *skb;
+    int cpu;
     
     rq = bio->bi_private;
     rq->err = error;
     skb = rq->skb;
+    d = rq->d;
     
     prq = (struct aoereq **)(&skb->cb[0]);
     *prq = rq;
     
-    t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, get_cpu());
+    cpu = get_cpu();
+    t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, cpu);
+    if (rq->t != t) {
+        dt = (struct aoedev_thread*)per_cpu_ptr(d->devthread_percpu, cpu);
+        atomic_inc(&dt->busy);
+        dt = (struct aoedev_thread*)per_cpu_ptr(d->devthread_percpu, rq->t->cpu);   // this can cause a cache line fetch
+        atomic_dec(&dt->busy);
+    }
     rq->t = t;
     if (in_interrupt()) {
         skb_queue_tail(&t->skb_com, skb);
@@ -863,7 +872,7 @@ static struct sk_buff * ata(struct aoedev *d, struct aoethread *t, struct sk_buf
         }
 
         dt = (struct aoedev_thread*)per_cpu_ptr(d->devthread_percpu, t->cpu);
-        dt->busy++;
+        atomic_inc(&dt->busy);
 
         submit_bio(rw, bio);
         return NULL;
@@ -995,11 +1004,11 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
             continue;
         
         dt = (struct aoedev_thread*)per_cpu_ptr(d->devthread_percpu, t->cpu);
-        dt->busy++;
+        atomic_inc(&dt->busy);
         
         rskb = make_response(t, skb, d->major, d->minor);
         if (rskb == NULL) {
-            dt->busy--;
+            atomic_dec(&dt->busy);
             goto out;
         }
 
@@ -1027,13 +1036,13 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
 
         // If its a specific address then we are finished
         if (major == d->major && minor == d->minor) {
-            dt->busy--;
+            atomic_dec(&dt->busy);
             goto out;
         }
         
         // Reduced the busy count which will allow the device
         // to be destroyed
-        dt->busy--;
+        atomic_dec(&dt->busy);
     }
 
 out:
