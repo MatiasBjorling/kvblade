@@ -883,7 +883,7 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
                     trace_printk(KERN_ERR "Can't allocate page for AOE packet\n");
                     goto drop;
                 }
-                skb_fill_page_desc(skb, frag++, page, 0, MIN(pad, PAGE_SIZE));
+                skb_fill_page_desc(skb, frag++, page, 0, min(pad, PAGE_SIZE));
             }
         }
 
@@ -1091,9 +1091,7 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
             // If its a specific address then we are finished
             if ((major == d->major && minor == d->minor) ||
                 skb == NULL)
-            {
                 goto out_dec;
-            }
 
             // Reduced the busy count which will allow the device
             // to be destroyed
@@ -1101,7 +1099,7 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
         }
     }
 
-    goto out:
+    goto out;
                     
 out_dec:
     atomic_dec(&dt->busy);
