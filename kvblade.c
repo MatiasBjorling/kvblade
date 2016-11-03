@@ -782,7 +782,7 @@ static struct bio* rq_init_bio(struct aoereq *rq)
 }
 
 static int ata_add_pages(struct sk_buff* skb, struct bio *bio) {
-    unsigned int offset = sizeof *aoe + sizeof *ata;
+    unsigned int offset = sizeof(struct aoe_hdr) + sizeof(struct aoe_atahdr);
     unsigned int len = skb->len - offset;
     
     int sg_n, sg_i;
