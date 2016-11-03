@@ -980,21 +980,17 @@ static void conv_response(struct aoethread* t, struct sk_buff *skb, int major, i
 }
 
 static struct sk_buff* clone_response(struct aoethread* t, struct sk_buff *skb, int major, int minor) {
-    struct aoe_hdr *aoe;
     struct sk_buff *rskb;
+    
+    if (skb_linearize(skb) < 0)
+        return NULL;    
 
     rskb = skb_new(t, skb->dev, skb->dev->mtu);
     if (rskb == NULL)
         return NULL;
-    aoe = (struct aoe_hdr *) skb_mac_header(rskb);
+    
     memcpy(skb_mac_header(rskb), skb_mac_header(skb), skb->len);
-    memcpy(aoe->dst, aoe->src, ETH_ALEN);
-    memcpy(aoe->src, skb->dev->dev_addr, ETH_ALEN);
-    aoe->type = __constant_htons(ETH_P_AOE);
-    aoe->verfl = AOE_HVER | AOEFL_RSP;
-    aoe->major = cpu_to_be16(major);
-    aoe->minor = minor;
-    aoe->err = 0;
+    conv_response(t, rskb, major, minor);
     return rskb;
 }
 
@@ -1002,89 +998,77 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
     struct sk_buff *rskb = NULL;
     struct aoedev *d;
     struct aoedev_thread *dt;
-    struct aoe_hdr *aoe;
+    struct aoe_hdr aoe;
     int major, minor;
     
-    aoe = (struct aoe_hdr *) skb_mac_header(skb);
-    major = be16_to_cpu(aoe->major);
-    minor = aoe->minor;
-
+    if (!skb_copy_bits(skb, 0, &aoe, sizeof(struct aoehdr)))
+        goto out;
+    major = be16_to_cpu(aoe.major);
+    minor = aoe.minor;
+    
     rcu_read_lock();
-    hlist_for_each_entry_rcu_notrace(d, &root.devlist, node) {
-        if ((major != d->major && major != 0xffff) ||
-                (minor != d->minor && minor != 0xff) ||
-                (skb->dev != d->netdev))
-            continue;
-        
-        dt = (struct aoedev_thread*)per_cpu_ptr(d->devthread_percpu, t->cpu);
-        atomic_inc(&dt->busy);
-        
-        switch (aoe->cmd) {
-            case AOECMD_ATA:
-            {
-                //rskb = conv_response(t, skb, d->major, d->minor);
-                //skb = NULL;
-                
-                if (skb_linearize(skb) < 0) {
-                    atomic_dec(&dt->busy);
-                    goto out;
-                }
-    
-                rskb = clone_response(t, skb, d->major, d->minor);
-                if (rskb == NULL) {
-                    atomic_dec(&dt->busy);
-                    goto out;
-                }
-                
-                dev_kfree_skb(skb);
-                skb = NULL;
-                
-                rskb = ata(d, t, rskb);
-                break;
-            }
-            case AOECMD_CFG:
-            {
-                if (skb_linearize(skb) < 0) {
-                    dev_kfree_skb(skb);
-                    return -ENOMEM;
-                }
-    
-                rskb = clone_response(t, skb, d->major, d->minor);
-                if (rskb == NULL) {
-                    atomic_dec(&dt->busy);
-                    goto out;
-                }
-                
-                rskb = cfg(d, t, rskb);
-                break;
-            }
-            default:
-                break;
-        }
-        
-        // If we have an immediate response to send then we
-        // should transmit it
-        if (rskb) {
-            if (in_interrupt()) {
-                skb_queue_tail(&t->skb_outq, rskb); 
-                wake(t);
-            } else {
-                dev_queue_xmit(rskb);
-            }
-            rskb = NULL;
-        }
+    if (~aoe.verfl & AOEFL_RSP)
+    {
+        hlist_for_each_entry_rcu_notrace(d, &root.devlist, node) {
+            if ((major != d->major && major != 0xffff) ||
+                    (minor != d->minor && minor != 0xff) ||
+                    (skb->dev != d->netdev))
+                continue;
 
-        // If its a specific address then we are finished
-        if ((major == d->major && minor == d->minor) ||
-            skb == NULL)
-        {
+            dt = (struct aoedev_thread*)per_cpu_ptr(d->devthread_percpu, t->cpu);
+            atomic_inc(&dt->busy);
+
+            switch (aoe.cmd) {
+                case AOECMD_ATA:
+                {
+                    rskb = clone_response(t, skb, d->major, d->minor);
+                    if (rskb == NULL) {
+                        atomic_dec(&dt->busy);
+                        goto out;
+                    }
+
+                    rskb = ata(d, t, rskb);
+                    break;
+                }
+                case AOECMD_CFG:
+                {
+                    rskb = clone_response(t, skb, d->major, d->minor);
+                    if (rskb == NULL) {
+                        atomic_dec(&dt->busy);
+                        goto out;
+                    }
+
+                    rskb = cfg(d, t, rskb);
+                    break;
+                }
+                default:
+                    break;
+            }
+
+            // If we have an immediate response to send then we
+            // should transmit it
+            if (rskb) {
+                if (in_interrupt()) {
+                    skb_queue_tail(&t->skb_outq, rskb); 
+                    wake(t);
+                } else {
+                    dev_queue_xmit(rskb);
+                }
+                rskb = NULL;
+            }
+
+            // If its a specific address then we are finished
+            if ((major == d->major && minor == d->minor) ||
+                skb == NULL)
+            {
+                atomic_dec(&dt->busy);
+                goto out;
+            }
+
+            // Reduced the busy count which will allow the device
+            // to be destroyed
             atomic_dec(&dt->busy);
-            goto out;
         }
-        
-        // Reduced the busy count which will allow the device
-        // to be destroyed
-        atomic_dec(&dt->busy);
     }
 
 out:
@@ -1095,32 +1079,19 @@ out:
 
 static int rcv(struct sk_buff *skb, struct net_device *ndev, struct packet_type *pt, struct net_device *orig_dev) {
     struct aoethread* t;
-    struct aoe_hdr *aoe;
-
+    
     skb = skb_share_check(skb, GFP_ATOMIC);
     if (skb == NULL)
         return -ENOMEM;
-
-    skb_push(skb, ETH_HLEN);
-    if (unlikely(!pskb_may_pull(skb, sizeof(struct aoe_hdr))))
-        return -ENOMEM;
-
-    aoe = (struct aoe_hdr *) skb_mac_header(skb);
-    if (~aoe->verfl & AOEFL_RSP)
-    {
-        t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, get_cpu());
-        if (in_interrupt()) {
-            skb_queue_tail(&t->skb_inq, skb);
-            wake(t);
-        } else {
-            ktrcv(t, skb);
-        }
-        put_cpu();
-        
+    
+    t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, get_cpu());
+    if (in_interrupt()) {
+        skb_queue_tail(&t->skb_inq, skb);
+        wake(t);
     } else {
-        dev_kfree_skb(skb);
+        ktrcv(t, skb);
     }
-
+    put_cpu();
     return 0;
 }
 
