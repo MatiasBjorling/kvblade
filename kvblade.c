@@ -878,7 +878,7 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
                     trace_printk(KERN_ERR "No more frags left in AOE packet\n");
                     goto drop;
                 }
-                page = alloc_page();
+                page = alloc_page(GFP_ATOMIC | __GFP_DMA);
                 if (page == NULL) {                    
                     trace_printk(KERN_ERR "Can't allocate page for AOE packet\n");
                     goto drop;
