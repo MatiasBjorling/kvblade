@@ -1036,6 +1036,9 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
                     goto out;
                 }
                 
+                dev_kfree_skb(skb);
+                skb = NULL;
+                
                 rskb = ata(d, t, rskb);
                 break;
             }
