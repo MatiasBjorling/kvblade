@@ -885,7 +885,8 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
                 }
                 get_page(page);
                 
-                frag_len = min(pad, PAGE_SIZE);
+                frag_len = pad;
+                if (frag_len > PAGE_SIZE) frag_len = PAGE_SIZE;
                 skb_fill_page_desc(skb, frag++, page, 0, frag_len);
                 
                 skb->len += frag_len;
@@ -943,7 +944,7 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
         break;
         
     case ATA_CMD_ID_ATA:
-        prinf(KERN_INFO "BLAH1 ");
+        printk(KERN_INFO "BLAH1 ");
         
         len += ata_identify(d, ata);
         break;
@@ -1040,7 +1041,6 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
     struct aoedev *d;
     struct aoedev_thread *dt;
     struct aoe_hdr* aoe;
-    struct aoe_atahdr *ata;
     int major, minor;
     
     aoe = (struct aoe_hdr *) skb_mac_header(skb);
@@ -1063,7 +1063,7 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
                 case AOECMD_ATA:
                 {
                     /*
-                    ata = (struct aoe_atahdr *) aoe->data;
+                    struct aoe_atahdr *ata = (struct aoe_atahdr *) aoe->data;
                     if (ata->cmdstat == ATA_CMD_ID_ATA)
                     {
                         rskb = clone_response(t, skb, d->major, d->minor);
