@@ -1094,12 +1094,15 @@ static int rcv(struct sk_buff *skb, struct net_device *ndev, struct packet_type 
     }
     
     t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, get_cpu());
+    ktrcv(t, skb);
+    /*
     if (in_interrupt()) {
         skb_queue_tail(&t->skb_inq, skb);
         wake(t);
     } else {
         ktrcv(t, skb);
     }
+    */
     put_cpu();
     return 0;
 }
