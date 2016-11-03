@@ -807,7 +807,7 @@ static int ata_add_pages(struct aoe_atahdr *ata, struct bio *bio) {
     return len;
 }
 
-static struct sk_buff * ata(struct aoedev *d, struct aoethread *t, struct sk_buff *skb) {
+static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk_buff *skb) {
     struct aoe_hdr *aoe;
     struct aoe_atahdr *ata;
     struct aoereq *rq;
@@ -894,7 +894,7 @@ drop:
     return NULL;
 }
 
-static struct sk_buff* cfg(struct aoedev *d, struct aoethread *t, struct sk_buff *skb) {
+static struct sk_buff* rcv_cfg(struct aoedev *d, struct aoethread *t, struct sk_buff *skb) {
     struct aoe_hdr *aoe;
     struct aoe_cfghdr *cfg;
     int len, cslen, ccmd;
@@ -1041,7 +1041,7 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
                         goto out;
                     }
 
-                    rskb = ata(d, t, rskb);
+                    rskb = rvv_ata(d, t, rskb);
                     break;
                 }
                 case AOECMD_CFG:
@@ -1052,7 +1052,7 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
                         goto out;
                     }
 
-                    rskb = cfg(d, t, rskb);
+                    rskb = rcv_cfg(d, t, rskb);
                     break;
                 }
                 default:
