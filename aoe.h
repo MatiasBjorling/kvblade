@@ -82,6 +82,7 @@ struct aoe_atahdr {
             unsigned char lba[6];
         };
 	unsigned char res[2];
+        unsigned char data[0];
 } __attribute__((packed)) typedef aoe_atahdr_t;
 
 struct aoe_cfghdr {

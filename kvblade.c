@@ -198,7 +198,6 @@ static char* spncpy(char *d, const char *s, int n) {
 static int count_busy(struct aoedev *d) {
     int n;
     struct aoedev_thread* dt;
-    volatile int* pbusy;
     
     int ret =0;
     for (n = 0; n < num_online_cpus(); n++) {
@@ -721,7 +720,7 @@ static void ktcom(struct aoethread* t, struct sk_buff *skb) {
     kmem_cache_free(root.aoe_rq_cache, rq);
     
     dt = (struct aoedev_thread*)per_cpu_ptr(d->devthread_percpu, t->cpu);
-    atomic_dec(&dt);
+    atomic_dec(&dt->busy);
     
     skb_trim(skb, len);
     dev_queue_xmit(skb);
@@ -999,9 +998,10 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
     struct aoedev *d;
     struct aoedev_thread *dt;
     struct aoe_hdr aoe;
+    struct aoe_atahdr ata;
     int major, minor;
     
-    if (!skb_copy_bits(skb, 0, &aoe, sizeof(struct aoehdr)))
+    if (!skb_copy_bits(skb, 0, &aoe, sizeof(struct aoe_hdr)))
         goto out;
     major = be16_to_cpu(aoe.major);
     minor = aoe.minor;
@@ -1021,7 +1021,21 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
             switch (aoe.cmd) {
                 case AOECMD_ATA:
                 {
-                    rskb = clone_response(t, skb, d->major, d->minor);
+                    if (!skb_copy_bits(skb, sizeof(struct aoe_hdr), &ata, sizeof(struct aoe_atahdr)))
+                        goto out;
+                                        
+                    switch (ata.cmdstat) {
+                        case ATA_CMD_PIO_READ:
+                        case ATA_CMD_PIO_READ_EXT:
+                        case ATA_CMD_PIO_WRITE:
+                        case ATA_CMD_PIO_WRITE_EXT:
+                            rskb = clone_response(t, skb, d->major, d->minor);
+                            break;
+                        default:
+                            rskb = clone_response(t, skb, d->major, d->minor);
+                            break;
+                    }
+                    
                     if (rskb == NULL) {
                         atomic_dec(&dt->busy);
                         goto out;
