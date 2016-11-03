@@ -868,7 +868,7 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
         } while (0);
         
         if (rw == READ) {
-            int pad = data_len;
+            int pad = data_len - (skb->len - len);
             int frag = skb_shinfo(skb)->nr_frags;
             struct page* page;
             
@@ -1060,6 +1060,7 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
             switch (aoe->cmd) {
                 case AOECMD_ATA:
                 {
+                    /*
                     ata = (struct aoe_atahdr *) aoe->data;
                     if (ata->cmdstat == ATA_CMD_ID_ATA)
                     {
@@ -1071,6 +1072,9 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
                         if (rskb == NULL) goto out_dec;
                         skb = NULL;
                     }
+                    */
+                    rskb = clone_response(t, skb, d->major, d->minor);
+                    if (rskb == NULL) goto out_dec;
 
                     rskb = rcv_ata(d, t, rskb);
                     break;
