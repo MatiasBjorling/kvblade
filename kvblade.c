@@ -881,6 +881,9 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
         ata->errfeat = ATA_ABORTED;
         break;
     case ATA_CMD_ID_ATA:
+        if (skb_linearize(skb) < 0) {
+            goto drop;
+        }
         len += ata_identify(d, ata);
     case ATA_CMD_FLUSH:
         ata->cmdstat = ATA_DRDY;
@@ -898,6 +901,9 @@ static struct sk_buff* rcv_cfg(struct aoedev *d, struct aoethread *t, struct sk_
     struct aoe_hdr *aoe;
     struct aoe_cfghdr *cfg;
     int len, cslen, ccmd;
+    
+    if (skb_linearize(skb) < 0)
+        goto drop;
 
     aoe = (struct aoe_hdr *) skb_mac_header(skb);
     cfg = (struct aoe_cfghdr *) aoe->data;
@@ -965,7 +971,7 @@ static void ktannounce(struct aoethread* t) {
     return;
 }
 
-static void conv_response(struct aoethread* t, struct sk_buff *skb, int major, int minor) {
+static struct sk_buff* conv_response(struct aoethread* t, struct sk_buff *skb, int major, int minor) {
     struct aoe_hdr *aoe;
 
     aoe = (struct aoe_hdr *) skb_mac_header(skb);
@@ -976,6 +982,7 @@ static void conv_response(struct aoethread* t, struct sk_buff *skb, int major, i
     aoe->major = cpu_to_be16(major);
     aoe->minor = minor;
     aoe->err = 0;
+    return skb;
 }
 
 static struct sk_buff* clone_response(struct aoethread* t, struct sk_buff *skb, int major, int minor) {
@@ -997,17 +1004,15 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
     struct sk_buff *rskb = NULL;
     struct aoedev *d;
     struct aoedev_thread *dt;
-    struct aoe_hdr aoe;
-    struct aoe_atahdr ata;
+    struct aoe_hdr* aoe;
     int major, minor;
     
-    if (!skb_copy_bits(skb, 0, &aoe, sizeof(struct aoe_hdr)))
-        goto out;
+    aoe = (struct aoe_hdr *) skb_mac_header(skb);
     major = be16_to_cpu(aoe.major);
     minor = aoe.minor;
     
     rcu_read_lock();
-    if (~aoe.verfl & AOEFL_RSP)
+    if (~aoe->verfl & AOEFL_RSP)
     {
         hlist_for_each_entry_rcu_notrace(d, &root.devlist, node) {
             if ((major != d->major && major != 0xffff) ||
@@ -1018,24 +1023,10 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
             dt = (struct aoedev_thread*)per_cpu_ptr(d->devthread_percpu, t->cpu);
             atomic_inc(&dt->busy);
 
-            switch (aoe.cmd) {
+            switch (aoe->cmd) {
                 case AOECMD_ATA:
                 {
-                    if (!skb_copy_bits(skb, sizeof(struct aoe_hdr), &ata, sizeof(struct aoe_atahdr)))
-                        goto out_dec;
-                                        
-                    switch (ata.cmdstat) {
-                        case ATA_CMD_PIO_READ:
-                        case ATA_CMD_PIO_READ_EXT:
-                        case ATA_CMD_PIO_WRITE:
-                        case ATA_CMD_PIO_WRITE_EXT:
-                            rskb = clone_response(t, skb, d->major, d->minor);
-                            break;
-                        default:
-                            rskb = clone_response(t, skb, d->major, d->minor);
-                            break;
-                    }
-                    
+                    rskb = clone_response(t, skb, d->major, d->minor);
                     if (rskb == NULL)
                         goto out_dec;
 
@@ -1094,6 +1085,13 @@ static int rcv(struct sk_buff *skb, struct net_device *ndev, struct packet_type 
     skb = skb_share_check(skb, GFP_ATOMIC);
     if (skb == NULL)
         return -ENOMEM;
+    
+    skb_push(skb, ETH_HLEN);
+    if (unlikely(!pskb_may_pull(skb, sizeof(struct aoe_hdr) + sizeof(struct aoe_atahdr))))
+    {
+        dev_kfree_skb(skb);
+        return 0;
+    }
     
     t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, get_cpu());
     if (in_interrupt()) {
