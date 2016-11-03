@@ -1062,13 +1062,15 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
                 {
                     ata = (struct aoe_atahdr *) aoe->data;
                     if (ata->cmdstat == ATA_CMD_ID_ATA)
+                    {
                         rskb = clone_response(t, skb, d->major, d->minor);
+                        if (rskb == NULL) goto out_dec;
+                    }
                     else {
                         rskb = conv_response(t, skb, d->major, d->minor);
+                        if (rskb == NULL) goto out_dec;
                         skb = NULL;
                     }
-                    if (rskb == NULL)
-                        goto out_dec;
 
                     rskb = rcv_ata(d, t, rskb);
                     break;
