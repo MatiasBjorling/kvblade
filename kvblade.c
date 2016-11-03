@@ -781,23 +781,22 @@ static struct bio* rq_init_bio(struct aoereq *rq)
     return bio;
 }
 
-static int ata_add_pages(struct sk_buff* skb, struct bio *bio) {
+static int ata_add_pages(struct sk_buff* skb, struct bio *bio, int len) {
     unsigned int offset = sizeof(struct aoe_hdr) + sizeof(struct aoe_atahdr);
-    unsigned int len = skb->len - offset;
     
     int sg_n, sg_i;
-    int sg_max = skb_shinfo(rcv)->nr_frags + 2;
+    int sg_max = skb_shinfo(skb)->nr_frags + 2;
     struct scatterlist sg_tbl[sg_max], *sgentry;
     
     // Create the source scatterlist from the received packet
     sg_init_table(sg_tbl, sg_max);
-    sg_n = skb_to_sgvec_nomark(rcv, sg_tbl, offset, len);
+    sg_n = skb_to_sgvec_nomark(skb, sg_tbl, offset, len);
     if (sg_n <= 0)
         return 0;
     sg_mark_end(&sg_tbl[sg_n - 1]);
 
     // Loop through all the scatterlist items and add them into the BIO
-    for_each_sg(sg_table, sgentry, sg_n, sg_i)
+    for_each_sg(sg_tbl, sgentry, sg_n, sg_i)
     {
         if (bio_add_page(bio,
                          sg_page(sgentry),
@@ -845,12 +844,13 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
     struct aoedev_thread *dt;
     struct bio *bio;
     sector_t lba;
-    int len, rw;
+    int len, rw, data_len;
     
     aoe = (struct aoe_hdr *) skb_mac_header(skb);
     ata = (struct aoe_atahdr *) aoe->data;
     lba = readlba(ata->lba);
     len = sizeof *aoe + sizeof *ata;
+    data_len = ata->scnt * KERNEL_SECTOR_SIZE;
     
     switch (ata->cmdstat) {
         do {
@@ -868,7 +868,7 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
         } while (0);
         
         if (rw == READ) {
-            int pad = ata->scnt * KERNEL_SECTOR_SIZE;
+            int pad = data_len;
             int frag = skb_shinfo(skb)->nr_frags;
             struct page* page;
             
@@ -916,7 +916,7 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
         bio->bi_end_io = ata_io_complete;
         bio->bi_private = rq;
 
-        if (ata_add_pages(skb, bio) <= 0) {
+        if (ata_add_pages(skb, bio, data_len) <= 0) {
             kmem_cache_free(root.aoe_rq_cache, rq);
             trace_printk(KERN_ERR "Can't bio_add_page for %d sectors\n", ata->scnt);
             goto drop;
@@ -936,7 +936,7 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
         
     case ATA_CMD_ID_ATA:
         len += ata_identify(d, ata);
-        skb_trim(rskb, len);
+        skb_trim(skb, len);
         break;
         
     case ATA_CMD_FLUSH:        
@@ -1101,6 +1101,8 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
         }
     }
 
+    goto out:
+                    
 out_dec:
     atomic_dec(&dt->busy);
 out:
