@@ -884,6 +884,9 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
                     goto drop;
                 }
                 skb_fill_page_desc(skb, frag++, page, 0, min(pad, PAGE_SIZE));
+                skb->len += tlen;
+                skb->data_len += tlen;
+                skb->truesize += tlen;
             }
         }
 
