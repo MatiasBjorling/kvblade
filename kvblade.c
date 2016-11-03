@@ -1022,7 +1022,7 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
                 case AOECMD_ATA:
                 {
                     if (!skb_copy_bits(skb, sizeof(struct aoe_hdr), &ata, sizeof(struct aoe_atahdr)))
-                        goto out;
+                        goto out_dec;
                                         
                     switch (ata.cmdstat) {
                         case ATA_CMD_PIO_READ:
@@ -1036,21 +1036,17 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
                             break;
                     }
                     
-                    if (rskb == NULL) {
-                        atomic_dec(&dt->busy);
-                        goto out;
-                    }
+                    if (rskb == NULL)
+                        goto out_dec;
 
-                    rskb = rvv_ata(d, t, rskb);
+                    rskb = rcv_ata(d, t, rskb);
                     break;
                 }
                 case AOECMD_CFG:
                 {
                     rskb = clone_response(t, skb, d->major, d->minor);
-                    if (rskb == NULL) {
-                        atomic_dec(&dt->busy);
-                        goto out;
-                    }
+                    if (rskb == NULL)
+                        goto out_dec;
 
                     rskb = rcv_cfg(d, t, rskb);
                     break;
@@ -1075,8 +1071,7 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
             if ((major == d->major && minor == d->minor) ||
                 skb == NULL)
             {
-                atomic_dec(&dt->busy);
-                goto out;
+                goto out_dec;
             }
 
             // Reduced the busy count which will allow the device
@@ -1085,6 +1080,8 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
         }
     }
 
+out_dec:
+    atomic_dec(&dt->busy);
 out:
     // We need to leave the RCU and release the SKB
     rcu_read_unlock();
