@@ -718,13 +718,14 @@ static void ktcom(struct aoethread* t, struct sk_buff *skb) {
     }
 
     rq->skb = NULL;
-    kmem_cache_free(root.aoe_rq_cache, rq);
     
     dt = (struct aoedev_thread*)per_cpu_ptr(d->devthread_percpu, t->cpu);
     atomic_dec(&dt);
     
     skb_trim(skb, len);
     dev_queue_xmit(skb);
+    
+    kmem_cache_free(root.aoe_rq_cache, rq);
 }
 
 static void ata_io_complete(struct bio *bio, int error) {
@@ -752,12 +753,7 @@ static void ata_io_complete(struct bio *bio, int error) {
         atomic_dec(&dt->busy);
     }
     rq->t = t;
-    if (in_interrupt()) {
-        skb_queue_tail(&t->skb_com, skb);
-        wake(t);
-    } else {
-        ktcom(t, skb);
-    }
+    ktcom(t, skb);
     put_cpu();
 }
 
