@@ -943,8 +943,9 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
         break;
         
     case ATA_CMD_ID_ATA:
+        prinf(KERN_INFO "BLAH1 ");
+        
         len += ata_identify(d, ata);
-        skb_trim(skb, len);
         break;
         
     case ATA_CMD_FLUSH:        
@@ -952,6 +953,7 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
         ata->errfeat = 0;
         break;
     }
+    
     skb_trim(skb, len);
     return skb;
 drop:
