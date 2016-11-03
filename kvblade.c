@@ -844,7 +844,7 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
     struct aoedev_thread *dt;
     struct bio *bio;
     sector_t lba;
-    int len, rw, data_len;
+    int len, rw, data_len, frag_len;
     
     aoe = (struct aoe_hdr *) skb_mac_header(skb);
     ata = (struct aoe_atahdr *) aoe->data;
@@ -873,7 +873,7 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
             struct page* page;
             
             // Add pages for all the MTU we are reading
-            for (; pad > 0; pad -= PAGE_SIZE) {
+            for (; pad > 0;) {
                 if (frag >= MAX_SKB_FRAGS) {
                     trace_printk(KERN_ERR "No more frags left in AOE packet\n");
                     goto drop;
@@ -883,10 +883,13 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
                     trace_printk(KERN_ERR "Can't allocate page for AOE packet\n");
                     goto drop;
                 }
-                skb_fill_page_desc(skb, frag++, page, 0, min(pad, PAGE_SIZE));
-                skb->len += tlen;
-                skb->data_len += tlen;
-                skb->truesize += tlen;
+                
+                frag_len = min(pad, PAGE_SIZE);
+                skb_fill_page_desc(skb, frag++, page, 0, frag_len);
+                skb->len += frag_len;
+                skb->data_len += frag_len;
+                skb->truesize += frag_len;
+                pad -= frag_len;
             }
         }
 
