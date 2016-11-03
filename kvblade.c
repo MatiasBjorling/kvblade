@@ -753,7 +753,12 @@ static void ata_io_complete(struct bio *bio, int error) {
         atomic_dec(&dt->busy);
     }
     rq->t = t;
-    ktcom(t, skb);
+    if (in_interrupt()) {
+        skb_queue_tail(&t->skb_com, skb);
+        wake(t);
+    } else {
+        ktcom(t, skb);
+    }
     put_cpu();
 }
 
@@ -1067,12 +1072,7 @@ static int rcv(struct sk_buff *skb, struct net_device *ndev, struct packet_type 
     if (~aoe->verfl & AOEFL_RSP)
     {
         t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, get_cpu());
-        if (in_interrupt()) {
-            skb_queue_tail(&t->skb_inq, skb);
-            wake(t);
-        } else {
-            ktrcv(t, skb);
-        }
+        ktrcv(t, skb);
         put_cpu();
         
     } else {
