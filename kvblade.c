@@ -718,14 +718,13 @@ static void ktcom(struct aoethread* t, struct sk_buff *skb) {
     }
 
     rq->skb = NULL;
+    kmem_cache_free(root.aoe_rq_cache, rq);
     
     dt = (struct aoedev_thread*)per_cpu_ptr(d->devthread_percpu, t->cpu);
     atomic_dec(&dt);
     
     skb_trim(skb, len);
     dev_queue_xmit(skb);
-    
-    kmem_cache_free(root.aoe_rq_cache, rq);
 }
 
 static void ata_io_complete(struct bio *bio, int error) {
@@ -1072,7 +1071,12 @@ static int rcv(struct sk_buff *skb, struct net_device *ndev, struct packet_type 
     if (~aoe->verfl & AOEFL_RSP)
     {
         t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, get_cpu());
-        ktrcv(t, skb);
+        if (in_interrupt()) {
+            skb_queue_tail(&t->skb_inq, skb);
+            wake(t);
+        } else {
+            ktrcv(t, skb);
+        }
         put_cpu();
         
     } else {
