@@ -887,6 +887,7 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
                 
                 frag_len = min(pad, PAGE_SIZE);
                 skb_fill_page_desc(skb, frag++, page, 0, frag_len);
+                
                 skb->len += frag_len;
                 skb->data_len += frag_len;
                 skb->truesize += frag_len;
@@ -1062,8 +1063,10 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
                     ata = (struct aoe_atahdr *) aoe->data;
                     if (ata->cmdstat == ATA_CMD_ID_ATA)
                         rskb = clone_response(t, skb, d->major, d->minor);
-                    else
+                    else {
                         rskb = conv_response(t, skb, d->major, d->minor);
+                        skb = NULL;
+                    }
                     if (rskb == NULL)
                         goto out_dec;
 
