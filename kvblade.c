@@ -1008,8 +1008,8 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
     int major, minor;
     
     aoe = (struct aoe_hdr *) skb_mac_header(skb);
-    major = be16_to_cpu(aoe.major);
-    minor = aoe.minor;
+    major = be16_to_cpu(aoe->major);
+    minor = aoe->minor;
     
     rcu_read_lock();
     if (~aoe->verfl & AOEFL_RSP)
