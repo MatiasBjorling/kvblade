@@ -808,7 +808,7 @@ static int ata_add_pages(struct aoe_atahdr *ata, struct bio *bio) {
     return len;
 }
 
-static struct sk_buff * ata(struct aoedev *d, struct aoethread *t, struct sk_buff *skb, struct sk_buff *rcv) {
+static struct sk_buff * ata(struct aoedev *d, struct aoethread *t, struct sk_buff *skb) {
     struct aoe_hdr *aoe;
     struct aoe_atahdr *ata;
     struct aoereq *rq;
@@ -895,7 +895,7 @@ drop:
     return NULL;
 }
 
-static struct sk_buff* cfg(struct aoedev *d, struct aoethread *t, struct sk_buff *skb, struct sk_buff *rcv) {
+static struct sk_buff* cfg(struct aoedev *d, struct aoethread *t, struct sk_buff *skb) {
     struct aoe_hdr *aoe;
     struct aoe_cfghdr *cfg;
     int len, cslen, ccmd;
@@ -966,7 +966,20 @@ static void ktannounce(struct aoethread* t) {
     return;
 }
 
-static struct sk_buff* make_response(struct aoethread* t, struct sk_buff *skb, int major, int minor) {
+static void conv_response(struct aoethread* t, struct sk_buff *skb, int major, int minor) {
+    struct aoe_hdr *aoe;
+
+    aoe = (struct aoe_hdr *) skb_mac_header(skb);
+    memcpy(aoe->dst, aoe->src, ETH_ALEN);
+    memcpy(aoe->src, skb->dev->dev_addr, ETH_ALEN);
+    aoe->type = __constant_htons(ETH_P_AOE);
+    aoe->verfl = AOE_HVER | AOEFL_RSP;
+    aoe->major = cpu_to_be16(major);
+    aoe->minor = minor;
+    aoe->err = 0;
+}
+
+static struct sk_buff* clone_response(struct aoethread* t, struct sk_buff *skb, int major, int minor) {
     struct aoe_hdr *aoe;
     struct sk_buff *rskb;
 
@@ -986,7 +999,7 @@ static struct sk_buff* make_response(struct aoethread* t, struct sk_buff *skb, i
 }
 
 static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
-    struct sk_buff *rskb;
+    struct sk_buff *rskb = NULL;
     struct aoedev *d;
     struct aoedev_thread *dt;
     struct aoe_hdr *aoe;
@@ -1006,25 +1019,48 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
         dt = (struct aoedev_thread*)per_cpu_ptr(d->devthread_percpu, t->cpu);
         atomic_inc(&dt->busy);
         
-        rskb = make_response(t, skb, d->major, d->minor);
-        if (rskb == NULL) {
-            atomic_dec(&dt->busy);
-            goto out;
-        }
-
         switch (aoe->cmd) {
             case AOECMD_ATA:
-                rskb = ata(d, t, rskb, skb);
+            {
+                //rskb = conv_response(t, skb, d->major, d->minor);
+                //skb = NULL;
+                
+                if (skb_linearize(skb) < 0) {
+                    atomic_dec(&dt->busy);
+                    goto out;
+                }
+    
+                rskb = clone_response(t, skb, d->major, d->minor);
+                if (rskb == NULL) {
+                    atomic_dec(&dt->busy);
+                    goto out;
+                }
+                
+                rskb = ata(d, t, rskb);
                 break;
+            }
             case AOECMD_CFG:
-                rskb = cfg(d, t, rskb, skb);
+            {
+                if (skb_linearize(skb) < 0) {
+                    dev_kfree_skb(skb);
+                    return -ENOMEM;
+                }
+    
+                rskb = clone_response(t, skb, d->major, d->minor);
+                if (rskb == NULL) {
+                    atomic_dec(&dt->busy);
+                    goto out;
+                }
+                
+                rskb = cfg(d, t, rskb);
                 break;
+            }
             default:
-                dev_kfree_skb(rskb);
-                rskb = NULL;
                 break;
         }
         
+        // If we have an immediate response to send then we
+        // should transmit it
         if (rskb) {
             if (in_interrupt()) {
                 skb_queue_tail(&t->skb_outq, rskb); 
@@ -1032,10 +1068,13 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
             } else {
                 dev_queue_xmit(rskb);
             }
+            rskb = NULL;
         }
 
         // If its a specific address then we are finished
-        if (major == d->major && minor == d->minor) {
+        if ((major == d->major && minor == d->minor) ||
+            skb == NULL)
+        {
             atomic_dec(&dt->busy);
             goto out;
         }
@@ -1046,10 +1085,8 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
     }
 
 out:
-    // We need to leave the RCU
+    // We need to leave the RCU and release the SKB
     rcu_read_unlock();
-                
-    // We are finished with the buffer
     dev_kfree_skb(skb);
 }
 
@@ -1061,11 +1098,9 @@ static int rcv(struct sk_buff *skb, struct net_device *ndev, struct packet_type 
     if (skb == NULL)
         return -ENOMEM;
 
-    if (skb_linearize(skb) < 0) {
-        dev_kfree_skb(skb);
-        return -ENOMEM;
-    }
     skb_push(skb, ETH_HLEN);
+    if (unlikely(!pskb_may_pull(skb, sizeof(struct aoe_hdr))))
+        return -ENOMEM;
 
     aoe = (struct aoe_hdr *) skb_mac_header(skb);
     if (~aoe->verfl & AOEFL_RSP)
