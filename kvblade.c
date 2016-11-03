@@ -1122,7 +1122,8 @@ out_dec:
 out:
     // We need to leave the RCU and release the SKB
     rcu_read_unlock();
-    dev_kfree_skb(skb);
+    if (skb != NULL)
+        dev_kfree_skb(skb);
 }
 
 static int rcv(struct sk_buff *skb, struct net_device *ndev, struct packet_type *pt, struct net_device *orig_dev) {
