@@ -1052,9 +1052,6 @@ static struct sk_buff* conv_response(struct aoethread* t, struct sk_buff *skb, i
 static struct sk_buff* clone_response(struct aoethread* t, struct sk_buff *skb, int major, int minor) {
     struct sk_buff *rskb;
     
-    if (skb_linearize(skb) < 0)
-        return NULL;    
-
     if (skb->len > skb->dev->mtu)
         return NULL;
     rskb = skb_new(t, skb->dev, skb->dev->mtu);
@@ -1064,17 +1061,6 @@ static struct sk_buff* clone_response(struct aoethread* t, struct sk_buff *skb, 
     skb_copy_bits(skb, 0, skb_mac_header(rskb), skb->len);
     conv_response(t, rskb, major, minor);
     return rskb;
-    
-    /*
-    struct sk_buff *rskb;
-    
-    rskb = skb_new(t, skb->dev, skb->dev->mtu);
-    if (rskb == NULL)
-        return NULL;
-    skb_copy_bits(skb, 0, skb_put(rskb, skb->len), skb->len);
-    conv_response(t, rskb, major, minor);
-    return rskb;
-    */
 }
 
 static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
