@@ -163,7 +163,7 @@ static ssize_t kvblade_sysfs_args(char *p, char *argv[], int argv_max) {
         if (argc < argv_max)
             argv[argc++] = p;
         else {
-            printk(KERN_ERR "too many args!\n");
+            printk(KERN_ERR "kvblade: too many args!\n");
             return -1;
         }
         while (*p && !isspace(*p))
@@ -296,7 +296,7 @@ static ssize_t kvblade_add(u32 major, u32 minor, char *ifname, char *path) {
     int n;
     struct aoedev_thread* dt;
     
-    printk("kvblade_add\n");
+    printk("kvblade: kvblade_add\n");
     nd = dev_get_by_name(&init_net, ifname);
     if (nd == NULL) {
         rcu_read_lock();
@@ -306,7 +306,7 @@ static ssize_t kvblade_add(u32 major, u32 minor, char *ifname, char *path) {
         }
         rcu_read_unlock();
         if (nd == NULL) {
-            eprintk("add failed: interface %s not found.\n", ifname);
+            eprintk("kvblade: add failed: interface %s not found.\n", ifname);
             return -ENOENT;
         }
     }
@@ -314,12 +314,12 @@ static ssize_t kvblade_add(u32 major, u32 minor, char *ifname, char *path) {
 
     bd = blkdev_get_by_path(path, FMODE_READ | FMODE_WRITE, NULL);
     if (!bd || IS_ERR(bd)) {
-        printk(KERN_ERR "add failed: can't open block device %s: %ld\n", path, PTR_ERR(bd));
+        printk(KERN_ERR "kvblade: add failed: can't open block device %s: %ld\n", path, PTR_ERR(bd));
         return -ENOENT;
     }
 
     if (kvblade_get_capacity(bd) == 0) {
-        printk(KERN_ERR "add failed: zero sized block device.\n");
+        printk(KERN_ERR "kvblade: add failed: zero sized block device.\n");
         ret = -ENOENT;
         goto err;
     }
@@ -336,7 +336,7 @@ static ssize_t kvblade_add(u32 major, u32 minor, char *ifname, char *path) {
             rcu_read_unlock();
             spin_unlock(&root.lock);
 
-            printk(KERN_ERR "add failed: device %d.%d already exists on %s.\n",
+            printk(KERN_ERR "kvblade: add failed: device %d.%d already exists on %s.\n",
                     major, minor, ifname);
 
             ret = -EEXIST;
@@ -349,7 +349,7 @@ static ssize_t kvblade_add(u32 major, u32 minor, char *ifname, char *path) {
     if (!d) {
         spin_unlock(&root.lock);
         
-        printk(KERN_ERR "add failed: kmalloc error for %d.%d\n", major, minor);
+        printk(KERN_ERR "kvblade: add failed: kmalloc error for %d.%d\n", major, minor);
         ret = -ENOMEM;
         goto err;
     }
@@ -370,7 +370,7 @@ static ssize_t kvblade_add(u32 major, u32 minor, char *ifname, char *path) {
         spin_unlock(&root.lock);
         kfree(d);
         
-        printk(KERN_ERR "add failed: alloc_percpu error for %d.%d\n", major, minor);
+        printk(KERN_ERR "kvblade: add failed: alloc_percpu error for %d.%d\n", major, minor);
         ret = -ENOMEM;
         goto err;
     }
@@ -385,7 +385,7 @@ static ssize_t kvblade_add(u32 major, u32 minor, char *ifname, char *path) {
     hlist_add_head_rcu(&d->node, &root.devlist);
     spin_unlock(&root.lock);
 
-    dprintk("added %s as %d.%d@%s: %Lu sectors.\n",
+    dprintk("kvblade: added %s as %d.%d@%s: %Lu sectors.\n",
             path, major, minor, ifname, d->scnt);
 
     t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, get_cpu());
@@ -432,14 +432,14 @@ static ssize_t kvblade_del(u32 major, u32 minor, char *ifname) {
     if (d == NULL) {
         rcu_read_unlock();
         
-        printk(KERN_ERR "del failed: device %d.%d@%s not found.\n",
+        printk(KERN_ERR "kvblade: del failed: device %d.%d@%s not found.\n",
                 major, minor, ifname);
         ret = -ENOENT;
         goto err;
     } else if (count_busy(d)) {
         rcu_read_unlock();
         
-        printk(KERN_ERR "del failed: device %d.%d@%s is busy.\n",
+        printk(KERN_ERR "kvblade: del failed: device %d.%d@%s is busy.\n",
                 major, minor, ifname);
         ret = -EBUSY;
         goto err;
@@ -466,7 +466,7 @@ static ssize_t store_add(struct aoedev *dev, const char *page, size_t len) {
     p[len] = '\0';
 
     if (kvblade_sysfs_args(p, argv, nelem(argv)) != 4) {
-        printk(KERN_ERR "bad arg count for add\n");
+        printk(KERN_ERR "kvblade: bad arg count for add\n");
         error = -EINVAL;
     } else
         error = kvblade_add(simple_strtoul(argv[0], NULL, 0),
@@ -490,7 +490,7 @@ static ssize_t store_del(struct aoedev *dev, const char *page, size_t len) {
     p[len] = '\0';
 
     if (kvblade_sysfs_args(p, argv, nelem(argv)) != 3) {
-        printk(KERN_ERR "bad arg count for del\n");
+        printk(KERN_ERR "kvblade: bad arg count for del\n");
         error = -EINVAL;
     } else
         error = kvblade_del(simple_strtoul(argv[0], NULL, 0),
@@ -732,7 +732,7 @@ static void ktcom(struct aoethread* t, struct sk_buff *skb) {
         ata->errfeat = 0;
         // should increment lba here, too
     } else {
-        printk(KERN_ERR "I/O error %d on %s\n", error, d->kobj.name);
+        printk(KERN_ERR "kvblade: I/O error %d on %s\n", error, d->kobj.name);
         ata->cmdstat = ATA_ERR | ATA_DF;
         ata->errfeat = ATA_UNC | ATA_ABORTED;
     }
@@ -842,7 +842,7 @@ static int skb_add_pages(struct sk_buff* skb, struct bio *bio, int len) {
     
     // Validate that everything is ok
     if (offset + len > skb->len) {
-        teprintk("packet I/O is out of range: (%d), max %d\n", offset + len, skb->len);
+        teprintk("kvblade: packet I/O is out of range: (%d), max %d\n", offset + len, skb->len);
         return 0;
     }
     
@@ -903,7 +903,7 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
 
         // Do a check on the IO range
         if ((lba + ata->scnt) > d->scnt) {
-            teprintk("sector I/O is out of range: %Lu (%d), max %Lu\n", (long long) lba, ata->scnt, d->scnt);
+            teprintk("kvblade: sector I/O is out of range: %Lu (%d), max %Lu\n", (long long) lba, ata->scnt, d->scnt);
             ata->errfeat = ATA_IDNF;
             break;
         }
@@ -912,7 +912,7 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
         if (unlikely(rq == NULL)) {
             rq = (aoereq_t*) kmem_cache_alloc_node(root.aoe_rq_cache, GFP_KERNEL | __GFP_THISNODE, numa_node_id());
             if (unlikely(rq == NULL)) {
-                teprintk("failed to allocate ATA request memory\n");
+                teprintk("kvblade: failed to allocate ATA request memory\n");
                 ata->errfeat = ATA_ABORTED;
                 break;
             }
@@ -925,7 +925,7 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
         // Make sure the buffer is linear
         if (skb_linearize(skb) < 0) {
             kmem_cache_free(root.aoe_rq_cache, rq);
-            teprintk("can't make SKB linear %d\n", ata->scnt);
+            teprintk("kvblade: can't make SKB linear %d\n", ata->scnt);
             ata->errfeat = ATA_ABORTED;
             break;
         }
@@ -939,7 +939,7 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
             {
                 if (unlikely(skb_pad(skb, pad))) {
                     kmem_cache_free(root.aoe_rq_cache, rq);
-                    teprintk("failed to allocate request obj\n");
+                    teprintk("kvblade: failed to allocate additional space for read operation\n");
                     ata->errfeat = ATA_ABORTED;
                     break;
                 }
@@ -959,7 +959,7 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
         
         if (ata_add_pages(ata, bio) <= 0) {
             kmem_cache_free(root.aoe_rq_cache, rq);
-            teprintk("Can't bio_add_page for %d sectors\n", ata->scnt);
+            teprintk("kvblade: can't bio_add_page for %d sectors\n", ata->scnt);
             ata->errfeat = ATA_ABORTED;
             goto drop;
         }
@@ -967,7 +967,7 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
         /*
         if (skb_add_pages(skb, bio, data_len) <= 0) {
             kmem_cache_free(root.aoe_rq_cache, rq);
-            teprintk(KERN_ERR "Can't bio_add_page for %d sectors\n", ata->scnt);
+            teprintk(KERN_ERR "kvblade: can't bio_add_page for %d sectors\n", ata->scnt);
             goto drop;
         }
         */
@@ -979,7 +979,7 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
         return NULL;
 
     default:
-        teprintk("Unknown ATA command 0x%02X\n", ata->cmdstat);
+        teprintk("kvblade: unknown ATA command 0x%02X\n", ata->cmdstat);
         ata->cmdstat = ATA_ERR;
         ata->errfeat = ATA_ABORTED;
         break;
@@ -1231,13 +1231,13 @@ static int kthread(void* data) {
     flush_signals(current);
     complete(&t->ktrendez);
     
-    printk(KERN_INFO "tokmodule: Started a new kvblade thread (%d)\n", smp_processor_id());
+    printk(KERN_INFO "kvblade: started a new kvblade thread (%d)\n", smp_processor_id());
     
     do {
         set_current_state(TASK_INTERRUPTIBLE);
         
         if (atomic_xchg(&t->announce_all, 0) > 0) {
-            //printk(KERN_INFO "tokmodule: kvblade announce on cpu(%d)\n", smp_processor_id());
+            //printk(KERN_INFO "kvblade: kvblade announce on cpu(%d)\n", smp_processor_id());
             ktannounce(t);
             continue;
         }
@@ -1260,7 +1260,7 @@ static int kthread(void* data) {
     skb_queue_purge(&t->skb_inq);
     skb_queue_purge(&t->skb_com);
     
-    printk(KERN_INFO "tokmodule: Stopped a kvblade thread (%d)\n", smp_processor_id());
+    printk(KERN_INFO "kvblade: stopped a kvblade thread (%d)\n", smp_processor_id());
     
     __set_current_state(TASK_RUNNING);
     complete(&t->ktrendez);
