@@ -634,6 +634,14 @@ static void setfld(u16 *a, int idx, int len, char *str) {
     }
 }
 
+static void skb_set_len(struct sk_buff* skb, int len)
+{
+    skb->len = len;
+    
+    skb->data_len = len - skb_headlen(skb);
+    if (skb->data_len < 0) skb->data_len = 0;
+}
+
 static int ata_identify(struct aoedev *d, struct aoe_atahdr *ata) {
     char buf[64];
     u16 *words = (u16 *) ata->data;
@@ -805,14 +813,6 @@ static int ata_add_pages(struct aoe_atahdr *ata, struct bio *bio) {
     }
     
     return len;
-}
-
-static void skb_set_len(struct sk_buff* skb, int len)
-{
-    skb->len = len;
-    
-    skb->data_len = len - skb_headlen(skb);
-    if (skb->data_len < 0) skb->data_len = 0;
 }
 
 static int skb_add_pages(struct sk_buff* skb, struct bio *bio, int len) {
