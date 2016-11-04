@@ -1058,14 +1058,10 @@ static struct sk_buff* conv_response(struct aoethread* t, struct sk_buff *skb, i
 static struct sk_buff* clone_response(struct aoethread* t, struct sk_buff *skb, int major, int minor) {
     struct sk_buff *rskb;
     
-    if (skb_linearize(skb) < 0)
-        return NULL;    
-
     rskb = skb_new(t, skb->dev, skb->dev->mtu);
     if (rskb == NULL)
         return NULL;
-    
-    memcpy(skb_mac_header(rskb), skb_mac_header(skb), skb->len);
+    skb_copy_bits(skb, 0, skb_put(rskb, skb->len), skb->len);
     conv_response(t, rskb, major, minor);
     return rskb;
 }
