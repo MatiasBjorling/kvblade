@@ -715,13 +715,13 @@ static void ktcom(struct aoethread* t, struct sk_buff *skb) {
     bio = &rq->bio;
     error = rq->err;
     
-    if (!error)
-        bytes = bio->bi_io_vec[0].bv_len;
-
     d = rq->d;
     
     aoe = (struct aoe_hdr *) skb_mac_header(skb);
     ata = (struct aoe_atahdr *) aoe->data;
+    
+    if (!error)
+        bytes = ata->scnt << 9;
 
     len = sizeof *aoe + sizeof *ata;
     if (bio_flagged(bio, BIO_UPTODATE)) {
@@ -931,23 +931,25 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
         }
         
         if (rw == READ) {
-            int pad = data_len - (skb->len - len);
+            int pad = (len + data_len) - skb->len;
             struct page* page;
             
             // Add pages for all the MTU we are reading
             if (pad > 0)
             {
-                if (unlikely(skb_pad(skb, pad))) {
+                if (skb_tailroom(skb) >= pad) {
+                    __skb_put(skb, pad);
+                } else {
+                    
                     kmem_cache_free(root.aoe_rq_cache, rq);
                     teprintk("kvblade: failed to allocate additional space for read operation\n");
                     ata->errfeat = ATA_ABORTED;
                     break;
-                }
-                __skb_put(skb, pad);
+                }                
+                len += pad;
             }
         }
-        else
-            skb_set_len(skb, len);
+        skb_set_len(skb, len);
 
         rq->d = d;
         rq->t = t;
