@@ -781,30 +781,60 @@ static struct bio* rq_init_bio(struct aoereq *rq)
     return bio;
 }
 
-static int ata_add_pages(struct aoe_atahdr *ata, struct bio *bio) {
-    unsigned int offset = 0;
-    unsigned int len = ata->scnt << 9;
+static int ata_add_pages(struct sk_buff* skb, struct bio *bio, int len) {
+    unsigned int offset = sizeof(struct aoe_hdr) + sizeof(struct aoe_atahdr);
     
-    for (;offset < len;)
+    int sg_n, sg_i;
+    int sg_max = skb_shinfo(skb)->nr_frags + 2;
+    struct scatterlist sg_tbl[sg_max], *sgentry;
+    
+    // Create the source scatterlist from the received packet
+    sg_init_table(sg_tbl, sg_max);
+    sg_n = skb_to_sgvec_nomark(skb, sg_tbl, offset, len);
+    if (sg_n <= 0)
+        return 0;
+    sg_mark_end(&sg_tbl[sg_n - 1]);
+
+    // Loop through all the scatterlist items and add them into the BIO
+    for_each_sg(sg_tbl, sgentry, sg_n, sg_i)
     {
-        unsigned char*  pdata = ata->data + offset;
-        struct page*    page = virt_to_page(pdata);
-        unsigned int    poff = offset_in_page(pdata);
-        
-        unsigned int sub = len - offset;
-        if (poff + sub > PAGE_SIZE)
-            sub = PAGE_SIZE - poff;
-        
         if (bio_add_page(bio,
-                         page,
-                         sub,
-                         poff) < sub)
+                         sg_page(sgentry),
+                         sgentry->length,
+                         sgentry->offset) < sgentry->length)
             return 0;
-        
-        offset += sub;
     }
     
     return len;
+}
+
+static struct sk_buff* conv_response(struct aoethread* t, struct sk_buff *skb, int major, int minor) {
+    struct aoe_hdr *aoe;
+
+    aoe = (struct aoe_hdr *) skb_mac_header(skb);
+    memcpy(aoe->dst, aoe->src, ETH_ALEN);
+    memcpy(aoe->src, skb->dev->dev_addr, ETH_ALEN);
+    aoe->type = __constant_htons(ETH_P_AOE);
+    aoe->verfl = AOE_HVER | AOEFL_RSP;
+    aoe->major = cpu_to_be16(major);
+    aoe->minor = minor;
+    aoe->err = 0;
+    return skb;
+}
+
+static struct sk_buff* clone_response(struct aoethread* t, struct sk_buff *skb, int major, int minor) {
+    struct sk_buff *rskb;
+    
+    if (skb_linearize(skb) < 0)
+        return NULL;    
+
+    rskb = skb_new(t, skb->dev, skb->dev->mtu);
+    if (rskb == NULL)
+        return NULL;
+    
+    memcpy(skb_mac_header(rskb), skb_mac_header(skb), skb->len);
+    conv_response(t, rskb, major, minor);
+    return rskb;
 }
 
 static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk_buff *skb) {
@@ -814,12 +844,14 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
     struct aoedev_thread *dt;
     struct bio *bio;
     sector_t lba;
-    int len, rw;
+    int len, rw, data_len, frag_len;
     
     aoe = (struct aoe_hdr *) skb_mac_header(skb);
     ata = (struct aoe_atahdr *) aoe->data;
     lba = readlba(ata->lba);
     len = sizeof *aoe + sizeof *ata;
+    data_len = ata->scnt * KERNEL_SECTOR_SIZE;
+    
     switch (ata->cmdstat) {
         do {
             case ATA_CMD_PIO_READ:
@@ -834,6 +866,35 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
             lba &= 0x0000FFFFFFFFFFFFULL;
             rw = WRITE;
         } while (0);
+        
+        if (rw == READ) {
+            int pad = data_len - (skb->len - len);
+            int frag = skb_shinfo(skb)->nr_frags;
+            struct page* page;
+            
+            // Add pages for all the MTU we are reading
+            for (; pad > 0;) {
+                if (frag >= MAX_SKB_FRAGS) {
+                    trace_printk(KERN_ERR "No more frags left in AOE packet\n");
+                    goto drop;
+                }
+                page = alloc_page(GFP_ATOMIC | __GFP_DMA);
+                if (page == NULL) {                    
+                    trace_printk(KERN_ERR "Can't allocate page for AOE packet\n");
+                    goto drop;
+                }
+                get_page(page);
+                
+                frag_len = pad;
+                if (frag_len > PAGE_SIZE) frag_len = PAGE_SIZE;
+                skb_fill_page_desc(skb, frag++, page, 0, frag_len);
+                
+                skb->len += frag_len;
+                skb->data_len += frag_len;
+                skb->truesize += frag_len;
+                pad -= frag_len;
+            }
+        }
 
         if ((lba + ata->scnt) > d->scnt) {
             trace_printk(KERN_ERR "sector I/O is out of range: %Lu (%d), max %Lu\n",
@@ -864,7 +925,7 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
         bio->bi_end_io = ata_io_complete;
         bio->bi_private = rq;
 
-        if (ata_add_pages(ata, bio) <= 0) {
+        if (ata_add_pages(skb, bio, data_len) <= 0) {
             kmem_cache_free(root.aoe_rq_cache, rq);
             trace_printk(KERN_ERR "Can't bio_add_page for %d sectors\n", ata->scnt);
             goto drop;
@@ -875,21 +936,23 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
 
         submit_bio(rw, bio);
         return NULL;
+        
     default:
         trace_printk(KERN_ERR "Unknown ATA command 0x%02X\n", ata->cmdstat);
         ata->cmdstat = ATA_ERR;
         ata->errfeat = ATA_ABORTED;
         break;
+        
     case ATA_CMD_ID_ATA:
-        if (skb_linearize(skb) < 0) {
-            goto drop;
-        }
         len += ata_identify(d, ata);
-    case ATA_CMD_FLUSH:
+        break;
+        
+    case ATA_CMD_FLUSH:        
         ata->cmdstat = ATA_DRDY;
         ata->errfeat = 0;
         break;
     }
+    
     skb_trim(skb, len);
     return skb;
 drop:
@@ -971,35 +1034,6 @@ static void ktannounce(struct aoethread* t) {
     return;
 }
 
-static struct sk_buff* conv_response(struct aoethread* t, struct sk_buff *skb, int major, int minor) {
-    struct aoe_hdr *aoe;
-
-    aoe = (struct aoe_hdr *) skb_mac_header(skb);
-    memcpy(aoe->dst, aoe->src, ETH_ALEN);
-    memcpy(aoe->src, skb->dev->dev_addr, ETH_ALEN);
-    aoe->type = __constant_htons(ETH_P_AOE);
-    aoe->verfl = AOE_HVER | AOEFL_RSP;
-    aoe->major = cpu_to_be16(major);
-    aoe->minor = minor;
-    aoe->err = 0;
-    return skb;
-}
-
-static struct sk_buff* clone_response(struct aoethread* t, struct sk_buff *skb, int major, int minor) {
-    struct sk_buff *rskb;
-    
-    if (skb_linearize(skb) < 0)
-        return NULL;    
-
-    rskb = skb_new(t, skb->dev, skb->dev->mtu);
-    if (rskb == NULL)
-        return NULL;
-    
-    memcpy(skb_mac_header(rskb), skb_mac_header(skb), skb->len);
-    conv_response(t, rskb, major, minor);
-    return rskb;
-}
-
 static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
     struct sk_buff *rskb = NULL;
     struct aoedev *d;
@@ -1026,9 +1060,21 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
             switch (aoe->cmd) {
                 case AOECMD_ATA:
                 {
+                    /*
+                    struct aoe_atahdr *ata = (struct aoe_atahdr *) aoe->data;
+                    if (ata->cmdstat == ATA_CMD_ID_ATA)
+                    {
+                        rskb = clone_response(t, skb, d->major, d->minor);
+                        if (rskb == NULL) goto out_dec;
+                    }
+                    else {
+                        rskb = conv_response(t, skb, d->major, d->minor);
+                        if (rskb == NULL) goto out_dec;
+                        skb = NULL;
+                    }
+                    */
                     rskb = clone_response(t, skb, d->major, d->minor);
-                    if (rskb == NULL)
-                        goto out_dec;
+                    if (rskb == NULL) goto out_dec;
 
                     rskb = rcv_ata(d, t, rskb);
                     break;
@@ -1061,9 +1107,7 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
             // If its a specific address then we are finished
             if ((major == d->major && minor == d->minor) ||
                 skb == NULL)
-            {
                 goto out_dec;
-            }
 
             // Reduced the busy count which will allow the device
             // to be destroyed
@@ -1071,12 +1115,15 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
         }
     }
 
+    goto out;
+                    
 out_dec:
     atomic_dec(&dt->busy);
 out:
     // We need to leave the RCU and release the SKB
     rcu_read_unlock();
-    dev_kfree_skb(skb);
+    if (skb != NULL)
+        dev_kfree_skb(skb);
 }
 
 static int rcv(struct sk_buff *skb, struct net_device *ndev, struct packet_type *pt, struct net_device *orig_dev) {
