@@ -733,7 +733,7 @@ static void ktcom(struct aoethread* t, struct sk_buff *skb) {
     atomic_dec(&dt->busy);
     
     skb->len = len;
-    if (unlikely(!pskb_may_pull(skb, sizeof(struct aoe_hdr))))
+    if (unlikely(!pskb_may_pull(skb, ETH_HLEN)))
     {
         dev_kfree_skb(skb);
         return;
