@@ -943,12 +943,26 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
         bio->bi_bdev = d->blkdev;
         bio->bi_end_io = ata_io_complete;
         bio->bi_private = rq;
+        
+        if (skb_linearize(skb) < 0) {
+            kmem_cache_free(root.aoe_rq_cache, rq);
+            trace_printk(KERN_ERR "Can't make SKB linear\n", ata->scnt);
+            goto drop;
+        }
+        
+        if (ata_add_pages(ata, bio) <= 0) {
+            kmem_cache_free(root.aoe_rq_cache, rq);
+            trace_printk(KERN_ERR "Can't bio_add_page for %d sectors\n", ata->scnt);
+            goto drop;
+        }
 
+        /*
         if (skb_add_pages(skb, bio, data_len) <= 0) {
             kmem_cache_free(root.aoe_rq_cache, rq);
             trace_printk(KERN_ERR "Can't bio_add_page for %d sectors\n", ata->scnt);
             goto drop;
         }
+        */
 
         dt = (struct aoedev_thread*)per_cpu_ptr(d->devthread_percpu, t->cpu);
         atomic_inc(&dt->busy);
