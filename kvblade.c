@@ -1052,9 +1052,6 @@ static struct sk_buff* conv_response(struct aoethread* t, struct sk_buff *skb, i
 static struct sk_buff* clone_response(struct aoethread* t, struct sk_buff *skb, int major, int minor) {
     struct sk_buff *rskb;
     
-    if (skb_linearize(skb) < 0)
-        return NULL;    
-
     if (skb->len > skb->dev->mtu)
         return NULL;
     rskb = skb_new(t, skb->dev, skb->dev->mtu);
