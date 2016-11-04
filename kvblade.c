@@ -943,6 +943,7 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
                     ata->errfeat = ATA_ABORTED;
                     break;
                 }
+                __skb_put(skb, pad);
             }
         }
         else
