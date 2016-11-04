@@ -900,7 +900,18 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
         prefetchw(bio);
         
         len += data_len;
-        skb_setlen(skb, len);
+        if (len > skb->len) {
+            int delta = len - skb->len;
+            
+            if (skb_is_nonlinear(skb) ||
+                skb->tail + delta > skb->end) {
+                teprintk("kvblade: failed to expand SKB as it is non-linear (len=%d skb->len=%d)\n", len, skb->len);
+                ata->errfeat = ATA_ABORTED;
+                break;
+            }
+            else
+                skb_put(delta);
+        }
 
         rq->d = d;
         rq->t = t;
