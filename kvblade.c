@@ -945,8 +945,7 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
                     }
                     if (pad > 0)
                         break;
-                }                
-                len += pad;
+                }
             }
         }
         len += data_len;
@@ -1141,9 +1140,14 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
                         ata->cmdstat == ATA_CMD_PIO_READ ||
                         ata->cmdstat == ATA_CMD_PIO_READ_EXT)
                     {
-                        rskb = conv_response(t, skb, d->major, d->minor);
-                        if (rskb == NULL) goto out;
-                        skb = NULL;
+                        if (skb_is_nonlinear(skb)) {                            
+                            rskb = conv_response(t, skb, d->major, d->minor);
+                            if (rskb == NULL) goto out;
+                            skb = NULL;
+                        } else {
+                            rskb = clone_response(t, skb, d->major, d->minor);
+                            if (rskb == NULL) goto out;
+                        }
                     }
                     else {
                         rskb = clone_response(t, skb, d->major, d->minor);
