@@ -807,6 +807,33 @@ static int ata_add_pages(struct aoe_atahdr *ata, struct bio *bio) {
     return len;
 }
 
+static int skb_add_pages(struct sk_buff* skb, struct bio *bio, int len) {
+    unsigned int offset = sizeof(struct aoe_hdr) + sizeof(struct aoe_atahdr);
+    
+    int sg_n, sg_i;
+    int sg_max = skb_shinfo(skb)->nr_frags + 2;
+    struct scatterlist sg_tbl[sg_max], *sgentry;
+    
+    // Create the source scatterlist from the received packet
+    sg_init_table(sg_tbl, sg_max);
+    sg_n = skb_to_sgvec_nomark(skb, sg_tbl, offset, len);
+    if (sg_n <= 0)
+        return 0;
+    sg_mark_end(&sg_tbl[sg_n - 1]);
+
+    // Loop through all the scatterlist items and add them into the BIO
+    for_each_sg(sg_tbl, sgentry, sg_n, sg_i)
+    {
+        if (bio_add_page(bio,
+                         sg_page(sgentry),
+                         sgentry->length,
+                         sgentry->offset) < sgentry->length)
+            return 0;
+    }
+    
+    return len;
+}
+
 static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk_buff *skb) {
     struct aoe_hdr *aoe;
     struct aoe_atahdr *ata;
