@@ -962,8 +962,8 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
                 }                
                 len += pad;
             }
-            len += data_len;
         }
+        len += data_len;
         skb->len = len;
         
         // Make sure the buffer is linear
