@@ -647,14 +647,6 @@ static void setfld(u16 *a, int idx, int len, char *str) {
     }
 }
 
-static void skb_set_len(struct sk_buff* skb, int len)
-{
-    skb->len = len;
-    
-    skb->data_len = len - skb_headlen(skb);
-    if (skb->data_len < 0) skb->data_len = 0;
-}
-
 static int ata_identify(struct aoedev *d, struct aoe_atahdr *ata) {
     char buf[64];
     u16 *words = (u16 *) ata->data;
@@ -740,7 +732,7 @@ static void ktcom(struct aoethread* t, struct sk_buff *skb) {
     dt = (struct aoedev_thread*)per_cpu_ptr(d->devthread_percpu, t->cpu);
     atomic_dec(&dt->busy);
     
-    skb_set_len(skb, len);
+    skb->len = len;
     if (unlikely(!pskb_may_pull(skb, sizeof(struct aoe_hdr))))
     {
         dev_kfree_skb(skb);
@@ -910,7 +902,7 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
 
         rq = (aoereq_t*) kmem_cache_alloc_node(root.aoe_rq_cache, GFP_ATOMIC & ~ __GFP_DMA, numa_node_id());
         if (unlikely(rq == NULL)) {
-            rq = (aoereq_t*) kmem_cache_alloc_node(root.aoe_rq_cache, GFP_KERNEL | __GFP_THISNODE, numa_node_id());
+            rq = (aoereq_t*) kmem_cache_alloc_node(root.aoe_rq_cache, GFP_KERNEL, numa_node_id());
             if (unlikely(rq == NULL)) {
                 teprintk("kvblade: failed to allocate ATA request memory\n");
                 ata->errfeat = ATA_ABORTED;
@@ -922,14 +914,6 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
         bio = rq_init_bio(rq);
         prefetchw(bio);
         
-        // Make sure the buffer is linear
-        if (skb_linearize(skb) < 0) {
-            kmem_cache_free(root.aoe_rq_cache, rq);
-            teprintk("kvblade: can't make SKB linear %d\n", ata->scnt);
-            ata->errfeat = ATA_ABORTED;
-            break;
-        }
-        
         if (rw == READ) {
             int pad = (len + data_len) - skb->len;
             struct page* page;
@@ -937,19 +921,60 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
             // Add pages for all the MTU we are reading
             if (pad > 0)
             {
-                if (skb_tailroom(skb) >= pad) {
+                // If its already linear then attempt to simple add some padding
+                if (skb->data_len == 0 && skb_tailroom(skb) >= pad)
+                {
                     __skb_put(skb, pad);
+                    
                 } else {
                     
-                    kmem_cache_free(root.aoe_rq_cache, rq);
-                    teprintk("kvblade: failed to allocate additional space for read operation\n");
-                    ata->errfeat = ATA_ABORTED;
-                    break;
+                    // Otherwise we need to add some pages on the end
+                    int frag = skb_shinfo(skb)->nr_frags;
+                    
+                    // Add pages for all the MTU we are reading
+                    for (; pad > 0;) {
+                        if (frag >= MAX_SKB_FRAGS) {
+                            kmem_cache_free(root.aoe_rq_cache, rq);
+                            teprintk("kvblade: no more frags left in AOE packet\n");
+                            ata->errfeat = ATA_ABORTED;
+                            break;
+                        }
+                        page = alloc_page(GFP_ATOMIC | __GFP_DMA);
+                        if (page == NULL) {
+                            page = alloc_page(GFP_KERNEL);
+                            if (page == NULL) {
+                                kmem_cache_free(root.aoe_rq_cache, rq);
+                                teprintk("kvblade: can't allocate page for AOE packet\n");
+                                ata->errfeat = ATA_ABORTED;
+                                break;
+                            }
+                        }
+                        get_page(page);
+
+                        frag_len = pad;
+                        if (frag_len > PAGE_SIZE) frag_len = PAGE_SIZE;
+                        skb_fill_page_desc(skb, frag++, page, 0, frag_len);
+
+                        len += frag_len;
+                        skb->len += frag_len;
+                        skb->data_len += frag_len;
+                        pad -= frag_len;
+                    }
+                    if (pad > 0)
+                        break;
                 }                
                 len += pad;
             }
         }
-        skb_set_len(skb, len);
+        skb->len = len;
+        
+        // Make sure the buffer is linear
+        if (skb_linearize(skb) < 0) {
+            kmem_cache_free(root.aoe_rq_cache, rq);
+            teprintk("kvblade: can't make SKB linear %d, %d, %d\n", ata->scnt, skb->len, skb->data_len);
+            ata->errfeat = ATA_ABORTED;
+            break;
+        }
 
         rq->d = d;
         rq->t = t;
