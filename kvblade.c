@@ -932,7 +932,7 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
 
         rq->d = d;
         rq->t = t;
-        rq->skb = skb;
+        rq->skb = rskb;
 
         bio_sector(bio) = lba;
         bio->bi_bdev = d->blkdev;
