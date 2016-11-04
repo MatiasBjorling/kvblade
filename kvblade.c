@@ -912,6 +912,8 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
                 pad -= frag_len;
             }
         }
+        else
+            skb_trim(skb, len);
 
         rq->d = d;
         rq->t = t;
