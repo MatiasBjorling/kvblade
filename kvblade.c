@@ -903,7 +903,7 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
         if (len > skb->len) {
             int delta = len - skb->len;
             
-            if (skb_is_nonlinear(skb) ||
+            if (skb->data_len > 0 ||
                 skb->tail + delta > skb->end) {
                 teprintk("kvblade: failed to expand SKB as it is non-linear or does not have enough space (len=%d skb->len=%d)\n", len, skb->len);
                 ata->errfeat = ATA_ABORTED;
@@ -940,9 +940,6 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
         ata->errfeat = ATA_ABORTED;
         break;
     case ATA_CMD_ID_ATA:
-        if (skb_linearize(skb) < 0) {
-            goto drop;
-        }
         len += ata_identify(d, ata);
     case ATA_CMD_FLUSH:
         ata->cmdstat = ATA_DRDY;
@@ -961,9 +958,6 @@ static struct sk_buff* rcv_cfg(struct aoedev *d, struct aoethread *t, struct sk_
     struct aoe_cfghdr *cfg;
     int len, cslen, ccmd;
     
-    if (skb_linearize(skb) < 0)
-        goto drop;
-
     aoe = (struct aoe_hdr *) skb_mac_header(skb);
     cfg = (struct aoe_cfghdr *) aoe->data;
     cslen = ntohs(cfg->cslen);
@@ -1111,7 +1105,7 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
                     if (ata->cmdstat == ATA_CMD_PIO_WRITE ||
                         ata->cmdstat == ATA_CMD_PIO_WRITE_EXT)
                     {
-                        if (skb_is_nonlinear(skb)) {                            
+                        if (skb->data_len > 0) {                            
                             rskb = conv_response(t, skb, d->major, d->minor);
                             if (rskb == NULL) goto out;
                             skb = NULL;
