@@ -731,6 +731,12 @@ static void ktcom(struct aoethread* t, struct sk_buff *skb) {
     atomic_dec(&dt->busy);
     
     skb_set_len(skb, len);
+    if (unlikely(!pskb_may_pull(skb, sizeof(struct aoe_hdr))))
+    {
+        dev_kfree_skb(skb);
+        return;
+    }
+    
     dev_queue_xmit(skb);
 }
 
@@ -1095,15 +1101,16 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
                 case AOECMD_ATA:
                 {
                     struct aoe_atahdr *ata = (struct aoe_atahdr *) aoe->data;
-                    if (ata->cmdstat == ATA_CMD_ID_ATA)
+                    if (ata->cmdstat == ATA_CMD_PIO_WRITE ||
+                        ata->cmdstat == ATA_CMD_PIO_WRITE_EXT)
                     {
-                        rskb = clone_response(t, skb, d->major, d->minor);
-                        if (rskb == NULL) goto out_dec;
-                    }
-                    else {
                         rskb = conv_response(t, skb, d->major, d->minor);
                         if (rskb == NULL) goto out_dec;
                         skb = NULL;
+                    }
+                    else {
+                        rskb = clone_response(t, skb, d->major, d->minor);
+                        if (rskb == NULL) goto out_dec;
                     }
 
                     rskb = rcv_ata(d, t, rskb);
