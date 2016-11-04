@@ -691,6 +691,19 @@ static int ata_identify(struct aoedev *d, struct aoe_atahdr *ata) {
     return 512;
 }
 
+static void skb_setlen(struct sk_buff* skb, int len)     
+    int headlen = skb_headlen(skb);
+    
+    skb->len = len;
+    
+    if (len - headlen > skb->data_len)
+    {
+        skb->data_len = len - headlen;
+        if (skb->data_len < 0)
+            skb->data_len = 0;
+    }
+}
+
 static void ktcom(struct aoethread* t, struct sk_buff *skb) {
     struct aoereq *rq, **prq;
     struct aoedev *d;
@@ -732,7 +745,7 @@ static void ktcom(struct aoethread* t, struct sk_buff *skb) {
     dt = (struct aoedev_thread*)per_cpu_ptr(d->devthread_percpu, t->cpu);
     atomic_dec(&dt->busy);
     
-    skb->len = len;
+    skb_setlen(skb, len);    
     if (unlikely(!pskb_may_pull(skb, ETH_HLEN)))
     {
         dev_kfree_skb(skb);
@@ -938,7 +951,7 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
             }
         }
         len += data_len;
-        skb->len = len;
+        skb_setlen(skb, len);
 
         rq->d = d;
         rq->t = t;
