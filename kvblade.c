@@ -830,7 +830,7 @@ static int skb_add_pages(struct sk_buff* skb, struct bio *bio, int len) {
     
     // Validate that everything is ok
     if (offset + len > skb->len) {
-        trace_printk(KERN_ERR "packet I/O is out of range: (%d), max %Lu\n", offset + len, skb->len);
+        trace_printk(KERN_ERR "packet I/O is out of range: (%d), max %d\n", offset + len, skb->len);
         return 0;
     }
     
@@ -884,11 +884,15 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
             lba &= 0x0000FFFFFFFFFFFFULL;
             rw = WRITE;
         } while (0);
+        
+        // Default to error unless it is succesful
+        ata->cmdstat = ATA_ERR;
+        ata->errfeat = 0;
 
+        // Do a check on the IO range
         if ((lba + ata->scnt) > d->scnt) {
             trace_printk(KERN_ERR "sector I/O is out of range: %Lu (%d), max %Lu\n",
                     (long long) lba, ata->scnt, d->scnt);
-            ata->cmdstat = ATA_ERR;
             ata->errfeat = ATA_IDNF;
             break;
         }
@@ -896,7 +900,6 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
         rq = (aoereq_t*) kmem_cache_alloc_node(root.aoe_rq_cache, GFP_ATOMIC & ~__GFP_DMA, numa_node_id());
         if (unlikely(rq == NULL)) {
             trace_printk(KERN_ERR "failed to allocate request obj\n");
-            ata->cmdstat = ATA_ERR;
             ata->errfeat = ATA_ABORTED;
             break;
         }
@@ -908,8 +911,9 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
         // Make sure the buffer is linear
         if (skb_linearize(skb) < 0) {
             kmem_cache_free(root.aoe_rq_cache, rq);
-            trace_printk(KERN_ERR "Can't make SKB linear\n", ata->scnt);
-            goto drop;
+            trace_printk(KERN_ERR "Can't make SKB linear %d\n", ata->scnt);
+            ata->errfeat = ATA_ABORTED;
+            break;
         }
         
         if (rw == READ) {
@@ -921,7 +925,6 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
             {
                 if (unlikely(!skb_pad(skb, pad))) {
                     trace_printk(KERN_ERR "failed to allocate request obj\n");
-                    ata->cmdstat = ATA_ERR;
                     ata->errfeat = ATA_ABORTED;
                     break;
                 }
@@ -932,7 +935,7 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
 
         rq->d = d;
         rq->t = t;
-        rq->skb = rskb;
+        rq->skb = skb;
 
         bio_sector(bio) = lba;
         bio->bi_bdev = d->blkdev;
@@ -942,6 +945,7 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
         if (ata_add_pages(ata, bio) <= 0) {
             kmem_cache_free(root.aoe_rq_cache, rq);
             trace_printk(KERN_ERR "Can't bio_add_page for %d sectors\n", ata->scnt);
+            ata->errfeat = ATA_ABORTED;
             goto drop;
         }
 
