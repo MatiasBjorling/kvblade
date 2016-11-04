@@ -958,7 +958,7 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
         dt = (struct aoedev_thread*)per_cpu_ptr(d->devthread_percpu, t->cpu);
         atomic_inc(&dt->busy);
         
-        if (unlikely(!pskb_may_pull(skb, sizeof(struct aoe_hdr) + sizeof(struct aoe_atahdr)))) {
+        if (unlikely(!pskb_may_pull(skb, ETH_HLEN))) {
             teprintk("kvblade: failed to prepare the Ethernet header\n", ata->scnt);
             goto drop;
         }
