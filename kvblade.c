@@ -841,7 +841,7 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
     struct aoedev_thread *dt;
     struct bio *bio;
     sector_t lba;
-    int len, rw;
+    int len, rw, data_len, frag_len;
     
     aoe = (struct aoe_hdr *) skb_mac_header(skb);
     ata = (struct aoe_atahdr *) aoe->data;
@@ -1129,6 +1129,8 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
         }
     }
 
+    goto out;
+    
 out_dec:
     atomic_dec(&dt->busy);
 out:
