@@ -949,7 +949,6 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
                                 break;
                             }
                         }
-                        get_page(page);
 
                         frag_len = pad;
                         if (frag_len > PAGE_SIZE) frag_len = PAGE_SIZE;
@@ -973,7 +972,7 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
             kmem_cache_free(root.aoe_rq_cache, rq);
             teprintk("kvblade: can't make SKB linear %d, %d, %d\n", ata->scnt, skb->len, skb->data_len);
             ata->errfeat = ATA_ABORTED;
-            break;
+            goto drop;
         }
 
         rq->d = d;
