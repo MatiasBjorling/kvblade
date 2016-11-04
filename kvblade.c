@@ -908,11 +908,14 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
             break;
         }
 
-        rq = (aoereq_t*) kmem_cache_alloc_node(root.aoe_rq_cache, GFP_KERNEL | __GFP_THISNODE, numa_node_id());
+        rq = (aoereq_t*) kmem_cache_alloc_node(root.aoe_rq_cache, GFP_ATOMIC & ~ __GFP_DMA, numa_node_id());
         if (unlikely(rq == NULL)) {
-            teprintk("failed to allocate ATA request memory\n");
-            ata->errfeat = ATA_ABORTED;
-            break;
+            rq = (aoereq_t*) kmem_cache_alloc_node(root.aoe_rq_cache, GFP_KERNEL | __GFP_THISNODE, numa_node_id());
+            if (unlikely(rq == NULL)) {
+                teprintk("failed to allocate ATA request memory\n");
+                ata->errfeat = ATA_ABORTED;
+                break;
+            }
         }
         prefetchw(rq);
 
@@ -934,7 +937,7 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
             // Add pages for all the MTU we are reading
             if (pad > 0)
             {
-                if (unlikely(!skb_pad(skb, pad))) {
+                if (unlikely(skb_pad(skb, pad))) {
                     kmem_cache_free(root.aoe_rq_cache, rq);
                     teprintk("failed to allocate request obj\n");
                     ata->errfeat = ATA_ABORTED;
