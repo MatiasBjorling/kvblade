@@ -840,10 +840,9 @@ static int skb_add_pages(struct sk_buff* skb, struct bio *bio, int len) {
     
     // Create the source scatterlist from the received packet
     sg_init_table(sg_tbl, sg_max);
-    sg_n = skb_to_sgvec_nomark(skb, sg_tbl, offset, len);
+    sg_n = skb_to_sgvec(skb, sg_tbl, offset, len);
     if (sg_n <= 0)
         return 0;
-    sg_mark_end(&sg_tbl[sg_n - 1]);
 
     // Loop through all the scatterlist items and add them into the BIO
     for_each_sg(sg_tbl, sgentry, sg_n, sg_i)
@@ -984,20 +983,20 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
         bio->bi_end_io = ata_io_complete;
         bio->bi_private = rq;
         
+        /*
         if (ata_add_pages(ata, bio) <= 0) {
             kmem_cache_free(root.aoe_rq_cache, rq);
             teprintk("kvblade: can't bio_add_page for %d sectors\n", ata->scnt);
             ata->errfeat = ATA_ABORTED;
             goto drop;
         }
+        */
 
-        /*
         if (skb_add_pages(skb, bio, data_len) <= 0) {
             kmem_cache_free(root.aoe_rq_cache, rq);
             teprintk(KERN_ERR "kvblade: can't bio_add_page for %d sectors\n", ata->scnt);
             goto drop;
         }
-        */
 
         dt = (struct aoedev_thread*)per_cpu_ptr(d->devthread_percpu, t->cpu);
         atomic_inc(&dt->busy);
