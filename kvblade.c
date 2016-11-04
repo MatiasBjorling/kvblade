@@ -913,7 +913,7 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
             }
         }
         else
-            skb_trim(skb, len);
+            skb->len = len;
 
         rq->d = d;
         rq->t = t;
