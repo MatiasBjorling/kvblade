@@ -737,9 +737,6 @@ static void ktcom(struct aoethread* t, struct sk_buff *skb) {
         ata->errfeat = ATA_UNC | ATA_ABORTED;
     }
 
-    rq->skb = NULL;
-    kmem_cache_free(root.aoe_rq_cache, rq);
-    
     dt = (struct aoedev_thread*)per_cpu_ptr(d->devthread_percpu, t->cpu);
     atomic_dec(&dt->busy);
     
@@ -751,6 +748,8 @@ static void ktcom(struct aoethread* t, struct sk_buff *skb) {
     }
     
     dev_queue_xmit(skb);
+    
+    kmem_cache_free(root.aoe_rq_cache, rq);
 }
 
 static void ata_io_complete(struct bio *bio, int error) {
@@ -909,7 +908,7 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
             break;
         }
 
-        rq = (aoereq_t*) kmem_cache_alloc_node(root.aoe_rq_cache, GFP_ATOMIC, numa_node_id());
+        rq = (aoereq_t*) kmem_cache_alloc_node(root.aoe_rq_cache, 0, numa_node_id());
         if (unlikely(rq == NULL)) {
             teprintk("failed to allocate request obj\n");
             ata->errfeat = ATA_ABORTED;
@@ -1115,15 +1114,15 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
     rcu_read_lock();
     if (~aoe->verfl & AOEFL_RSP)
     {
-        hlist_for_each_entry_rcu_notrace(d, &root.devlist, node) {
+        hlist_for_each_entry_rcu_notrace(d, &root.devlist, node)
+        {
             if ((major != d->major && major != 0xffff) ||
                     (minor != d->minor && minor != 0xff) ||
                     (skb->dev != d->netdev))
                 continue;
 
             dt = (struct aoedev_thread*)per_cpu_ptr(d->devthread_percpu, t->cpu);
-            atomic_inc(&dt->busy);
-
+            
             switch (aoe->cmd) {
                 case AOECMD_ATA:
                 {
@@ -1134,61 +1133,52 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
                         ata->cmdstat == ATA_CMD_PIO_READ_EXT)
                     {
                         rskb = conv_response(t, skb, d->major, d->minor);
-                        if (rskb == NULL) goto out_dec;
+                        if (rskb == NULL) goto out;
                         skb = NULL;
                     }
                     else {
                         rskb = clone_response(t, skb, d->major, d->minor);
-                        if (rskb == NULL) goto out_dec;
+                        if (rskb == NULL) goto out;
                     }
+                    
+                    // Leave the lock (which means we must exit the loop)
+                    atomic_inc(&dt->busy);
+                    rcu_read_unlock();
 
+                    // Process the IO (if an error occurs then they'll be
+                    // a packet ready to send immediately)
                     rskb = rcv_ata(d, t, rskb);
-                    break;
+                    if (rskb)
+                        dev_queue_xmit(rskb);
+                    
+                    // Clean up and release the device
+                    if (skb != NULL)
+                        dev_kfree_skb(skb);
+                    atomic_dec(&dt->busy);
+                    return;
                 }
                 case AOECMD_CFG:
                 {
                     rskb = clone_response(t, skb, d->major, d->minor);
                     if (rskb == NULL)
-                        goto out_dec;
+                        goto out;
 
                     rskb = rcv_cfg(d, t, rskb);
+                    if (rskb)
+                        dev_queue_xmit(rskb);
                     break;
                 }
                 default:
                     break;
             }
 
-            // If we have an immediate response to send then we
-            // should transmit it
-            if (rskb) {
-                if (in_interrupt()) {
-                    skb_queue_tail(&t->skb_outq, rskb); 
-                    wake(t);
-                } else {
-                    dev_queue_xmit(rskb);
-                }
-                rskb = NULL;
-            }
-
-            // Reduced the busy count which will allow the device
-            // to be destroyed
-            atomic_dec(&dt->busy);
-
             // If its a specific address then we are finished
-            if ((major == d->major && minor == d->minor) ||
-                skb == NULL)
-            {
-                goto out;
-            }
+            if (major == d->major && minor == d->minor)
+                break;
         }
     }
 
-    goto out;
-    
-out_dec:
-    atomic_dec(&dt->busy);
 out:
-    // We need to leave the RCU and release the SKB
     rcu_read_unlock();
     if (skb != NULL)
         dev_kfree_skb(skb);
