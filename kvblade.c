@@ -1024,22 +1024,6 @@ static void ktannounce(struct aoethread* t) {
     return;
 }
 
-static struct sk_buff* __conv_response(struct aoethread* t, struct sk_buff *skb, int major, int minor) {
-    struct aoe_hdr *aoe;
-     struct net_device* target = skb->dev;
-
-    aoe = (struct aoe_hdr *) skb_mac_header(skb);
-    memcpy(aoe->dst, aoe->src, ETH_ALEN);
-    memcpy(aoe->src, target->dev_addr, ETH_ALEN);
-    aoe->type = __constant_htons(ETH_P_AOE);
-    aoe->verfl = AOE_HVER | AOEFL_RSP;
-    aoe->major = cpu_to_be16(major);
-    aoe->minor = minor;
-    aoe->err = 0;
-    return skb;
-    
-}
-
 static struct sk_buff* conv_response(struct aoethread* t, struct sk_buff *skb, int major, int minor) {
     struct aoe_hdr *aoe;
     struct net_device* target = skb->dev;
@@ -1053,22 +1037,33 @@ static struct sk_buff* conv_response(struct aoethread* t, struct sk_buff *skb, i
     skb_reset_network_header(skb);
     skb_reset_transport_header(skb);
     skb_reset_mac_len(skb);
-    
-    return __conv_response(t, skb, major, minor);
+
+    aoe = (struct aoe_hdr *) skb_mac_header(skb);
+    memcpy(aoe->dst, aoe->src, ETH_ALEN);
+    memcpy(aoe->src, target->dev_addr, ETH_ALEN);
+    aoe->type = __constant_htons(ETH_P_AOE);
+    aoe->verfl = AOE_HVER | AOEFL_RSP;
+    aoe->major = cpu_to_be16(major);
+    aoe->minor = minor;
+    aoe->err = 0;
+    return skb;
 }
 
 static struct sk_buff* clone_response(struct aoethread* t, struct sk_buff *skb, int major, int minor) {
     struct sk_buff *rskb;
     
+    if (skb_linearize(skb) < 0)
+        return NULL;    
+
     if (skb->len > skb->dev->mtu)
         return NULL;
     rskb = skb_new(t, skb->dev, skb->dev->mtu);
     if (rskb == NULL)
         return NULL;
     
-    skb_copy_bits(skb, 0, skb_mac_header(rskb), skb->len);
-    
-    return __conv_response(t, skb, major, minor);
+    skb_copy_bits(skb, 0, skb_put(rskb, skb->len), skb->len);
+    conv_response(t, rskb, major, minor);
+    return rskb;
 }
 
 static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
