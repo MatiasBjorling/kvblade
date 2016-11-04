@@ -965,14 +965,6 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
         }
         len += data_len;
         skb->len = len;
-        
-        // Make sure the buffer is linear
-        if (skb_linearize(skb) < 0) {
-            kmem_cache_free(root.aoe_rq_cache, rq);
-            teprintk("kvblade: can't make SKB linear %d, %d, %d\n", ata->scnt, skb->len, skb->data_len);
-            ata->errfeat = ATA_ABORTED;
-            goto drop;
-        }
 
         rq->d = d;
         rq->t = t;
