@@ -1162,9 +1162,10 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
                         ata->cmdstat == ATA_CMD_PIO_READ ||
                         ata->cmdstat == ATA_CMD_PIO_READ_EXT)
                     {
-                        rskb = conv_response(t, skb, d->major, d->minor);
+                        //rskb = conv_response(t, skb, d->major, d->minor);
+                        rskb = clone_response(t, skb, d->major, d->minor);
                         if (rskb == NULL) goto out;
-                        skb = NULL;
+                        //skb = NULL;
                     }
                     else {
                         rskb = clone_response(t, skb, d->major, d->minor);
