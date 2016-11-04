@@ -910,7 +910,7 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
                 break;
             }
             
-            skb_put(delta);
+            skb_put(skb, delta);
         }
 
         rq->d = d;
