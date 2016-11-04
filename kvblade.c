@@ -799,32 +799,6 @@ static struct bio* rq_init_bio(struct aoereq *rq)
     return bio;
 }
 
-static int ata_add_pages(struct aoe_atahdr *ata, struct bio *bio) {
-    unsigned int offset = 0;
-    unsigned int len = ata->scnt << 9;
-    
-    for (;offset < len;)
-    {
-        unsigned char*  pdata = ata->data + offset;
-        struct page*    page = virt_to_page(pdata);
-        unsigned int    poff = offset_in_page(pdata);
-        
-        unsigned int sub = len - offset;
-        if (poff + sub > PAGE_SIZE)
-            sub = PAGE_SIZE - poff;
-        
-        if (bio_add_page(bio,
-                         page,
-                         sub,
-                         poff) < sub)
-            return 0;
-        
-        offset += sub;
-    }
-    
-    return len;
-}
-
 static int skb_add_pages(struct sk_buff* skb, struct bio *bio, int len) {
     unsigned int offset = sizeof(struct aoe_hdr) + sizeof(struct aoe_atahdr);
     
@@ -917,6 +891,14 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
             int pad = (len + data_len) - skb->len;
             struct page* page;
             
+            // Make sure the buffer is linear
+            if (skb_linearize(skb) < 0) {
+                kmem_cache_free(root.aoe_rq_cache, rq);
+                teprintk("kvblade: can't make SKB linear %d, %d, %d\n", ata->scnt, skb->len, skb->data_len);
+                ata->errfeat = ATA_ABORTED;
+                goto drop;
+            }
+            
             // Add pages for all the MTU we are reading
             if (pad > 0)
             {
@@ -974,15 +956,6 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
         bio->bi_bdev = d->blkdev;
         bio->bi_end_io = ata_io_complete;
         bio->bi_private = rq;
-        
-        /*
-        if (ata_add_pages(ata, bio) <= 0) {
-            kmem_cache_free(root.aoe_rq_cache, rq);
-            teprintk("kvblade: can't bio_add_page for %d sectors\n", ata->scnt);
-            ata->errfeat = ATA_ABORTED;
-            goto drop;
-        }
-        */
 
         if (skb_add_pages(skb, bio, data_len) <= 0) {
             kmem_cache_free(root.aoe_rq_cache, rq);
@@ -1153,10 +1126,9 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
                         ata->cmdstat == ATA_CMD_PIO_READ ||
                         ata->cmdstat == ATA_CMD_PIO_READ_EXT)
                     {
-                        //rskb = conv_response(t, skb, d->major, d->minor);
-                        rskb = clone_response(t, skb, d->major, d->minor);
+                        rskb = conv_response(t, skb, d->major, d->minor);
                         if (rskb == NULL) goto out;
-                        //skb = NULL;
+                        skb = NULL;
                     }
                     else {
                         rskb = clone_response(t, skb, d->major, d->minor);
