@@ -905,12 +905,12 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
             
             if (skb_is_nonlinear(skb) ||
                 skb->tail + delta > skb->end) {
-                teprintk("kvblade: failed to expand SKB as it is non-linear (len=%d skb->len=%d)\n", len, skb->len);
+                teprintk("kvblade: failed to expand SKB as it is non-linear or does not have enough space (len=%d skb->len=%d)\n", len, skb->len);
                 ata->errfeat = ATA_ABORTED;
                 break;
             }
-            else
-                skb_put(delta);
+            
+            skb_put(delta);
         }
 
         rq->d = d;
