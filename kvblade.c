@@ -899,55 +899,6 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
         bio = rq_init_bio(rq);
         prefetchw(bio);
         
-        if (rw == READ) {
-            int pad = (len + data_len) - skb->len;
-            struct page* page;
-            
-            // Add pages for all the MTU we are reading
-            if (pad > 0)
-            {
-                // If its already linear then attempt to simple add some padding
-                if (skb->data_len == 0 && skb_tailroom(skb) >= pad)
-                {
-                    skb_put(skb, pad);
-                    
-                } else {
-                    
-                    // Otherwise we need to add some pages on the end
-                    int frag = skb_shinfo(skb)->nr_frags;
-                    
-                    // Add pages for all the MTU we are reading
-                    for (; pad > 0;) {
-                        if (frag >= MAX_SKB_FRAGS) {
-                            kmem_cache_free(root.aoe_rq_cache, rq);
-                            teprintk("kvblade: no more frags left in AOE packet\n");
-                            ata->errfeat = ATA_ABORTED;
-                            break;
-                        }
-                        page = alloc_page(GFP_ATOMIC | __GFP_DMA);
-                        if (page == NULL) {
-                            page = alloc_page(GFP_KERNEL);
-                            if (page == NULL) {
-                                kmem_cache_free(root.aoe_rq_cache, rq);
-                                teprintk("kvblade: can't allocate page for AOE packet\n");
-                                ata->errfeat = ATA_ABORTED;
-                                break;
-                            }
-                        }
-
-                        frag_len = pad;
-                        if (frag_len > PAGE_SIZE) frag_len = PAGE_SIZE;
-                        skb_fill_page_desc(skb, frag++, page, 0, frag_len);
-
-                        skb->len += frag_len;
-                        skb->data_len += frag_len;
-                        pad -= frag_len;
-                    }
-                    if (pad > 0)
-                        break;
-                }
-            }
-        }
         len += data_len;
         skb_setlen(skb, len);
 
@@ -1136,9 +1087,7 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
                 {
                     struct aoe_atahdr *ata = (struct aoe_atahdr *) aoe->data;
                     if (ata->cmdstat == ATA_CMD_PIO_WRITE ||
-                        ata->cmdstat == ATA_CMD_PIO_WRITE_EXT ||
-                        ata->cmdstat == ATA_CMD_PIO_READ ||
-                        ata->cmdstat == ATA_CMD_PIO_READ_EXT)
+                        ata->cmdstat == ATA_CMD_PIO_WRITE_EXT)
                     {
                         if (skb_is_nonlinear(skb)) {                            
                             rskb = conv_response(t, skb, d->major, d->minor);
