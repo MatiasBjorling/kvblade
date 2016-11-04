@@ -891,14 +891,6 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
             int pad = (len + data_len) - skb->len;
             struct page* page;
             
-            // Make sure the buffer is linear
-            if (skb_linearize(skb) < 0) {
-                kmem_cache_free(root.aoe_rq_cache, rq);
-                teprintk("kvblade: can't make SKB linear %d, %d, %d\n", ata->scnt, skb->len, skb->data_len);
-                ata->errfeat = ATA_ABORTED;
-                goto drop;
-            }
-            
             // Add pages for all the MTU we are reading
             if (pad > 0)
             {
@@ -965,6 +957,11 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
 
         dt = (struct aoedev_thread*)per_cpu_ptr(d->devthread_percpu, t->cpu);
         atomic_inc(&dt->busy);
+        
+        if (unlikely(!pskb_may_pull(skb, sizeof(struct aoe_hdr) + sizeof(struct aoe_atahdr)))) {
+            teprintk("kvblade: failed to prepare the Ethernet header\n", ata->scnt);
+            goto drop;
+        }
 
         submit_bio(rw, bio);
         return NULL;
