@@ -953,7 +953,6 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
                         if (frag_len > PAGE_SIZE) frag_len = PAGE_SIZE;
                         skb_fill_page_desc(skb, frag++, page, 0, frag_len);
 
-                        len += frag_len;
                         skb->len += frag_len;
                         skb->data_len += frag_len;
                         pad -= frag_len;
@@ -963,6 +962,7 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
                 }                
                 len += pad;
             }
+            len += data_len;
         }
         skb->len = len;
         
@@ -994,7 +994,7 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
 
         if (skb_add_pages(skb, bio, data_len) <= 0) {
             kmem_cache_free(root.aoe_rq_cache, rq);
-            teprintk(KERN_ERR "kvblade: can't bio_add_page for %d sectors\n", ata->scnt);
+            teprintk("kvblade: can't bio_add_page for %d sectors\n", ata->scnt);
             goto drop;
         }
 
