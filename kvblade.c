@@ -908,7 +908,7 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
             break;
         }
 
-        rq = (aoereq_t*) kmem_cache_alloc_node(root.aoe_rq_cache, 0, numa_node_id());
+        rq = (aoereq_t*) kmem_cache_alloc_node(root.aoe_rq_cache, GFP_KERNEL, numa_node_id());
         if (unlikely(rq == NULL)) {
             teprintk("failed to allocate request obj\n");
             ata->errfeat = ATA_ABORTED;
