@@ -722,7 +722,7 @@ static void ktcom(struct aoethread* t, struct sk_buff *skb) {
     dt = (struct aoedev_thread*)per_cpu_ptr(d->devthread_percpu, t->cpu);
     atomic_dec(&dt->busy);
     
-    skb_trim(skb, len);
+    skb->len = len;
     dev_queue_xmit(skb);
 }
 
