@@ -903,7 +903,7 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
         if (len > skb->len) {
             int delta = len - skb->len;
             
-            if (skb->data_len > 0 ||
+            if (skb_is_nonlinear(skb) ||
                 skb->tail + delta > skb->end) {
                 teprintk("kvblade: failed to expand SKB as it is non-linear or does not have enough space (len=%d skb->len=%d)\n", len, skb->len);
                 ata->errfeat = ATA_ABORTED;
@@ -1046,7 +1046,7 @@ static struct sk_buff* conv_response(struct aoethread* t, struct sk_buff *skb, i
 
     aoe = (struct aoe_hdr *) skb_mac_header(skb);
     memcpy(aoe->dst, aoe->src, ETH_ALEN);
-    memcpy(aoe->src, skb->dev->dev_addr, ETH_ALEN);
+    memcpy(aoe->src, target->dev_addr, ETH_ALEN);
     aoe->type = __constant_htons(ETH_P_AOE);
     aoe->verfl = AOE_HVER | AOEFL_RSP;
     aoe->major = cpu_to_be16(major);
@@ -1058,12 +1058,27 @@ static struct sk_buff* conv_response(struct aoethread* t, struct sk_buff *skb, i
 static struct sk_buff* clone_response(struct aoethread* t, struct sk_buff *skb, int major, int minor) {
     struct sk_buff *rskb;
     
+    if (skb_linearize(skb) < 0)
+        return NULL;    
+
+    rskb = skb_new(t, skb->dev, skb->dev->mtu);
+    if (rskb == NULL)
+        return NULL;
+    
+    memcpy(skb_mac_header(rskb), skb_mac_header(skb), skb->len);
+    conv_response(t, rskb, major, minor);
+    return rskb;
+    
+    /*
+    struct sk_buff *rskb;
+    
     rskb = skb_new(t, skb->dev, skb->dev->mtu);
     if (rskb == NULL)
         return NULL;
     skb_copy_bits(skb, 0, skb_put(rskb, skb->len), skb->len);
     conv_response(t, rskb, major, minor);
     return rskb;
+    */
 }
 
 static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
@@ -1096,7 +1111,7 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
                     if (ata->cmdstat == ATA_CMD_PIO_WRITE ||
                         ata->cmdstat == ATA_CMD_PIO_WRITE_EXT)
                     {
-                        if (skb->data_len > 0) {                            
+                        if (skb_is_nonlinear(skb)) {                            
                             rskb = conv_response(t, skb, d->major, d->minor);
                             if (rskb == NULL) goto out;
                             skb = NULL;
