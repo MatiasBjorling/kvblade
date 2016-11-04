@@ -691,16 +691,15 @@ static int ata_identify(struct aoedev *d, struct aoe_atahdr *ata) {
     return 512;
 }
 
-static void skb_setlen(struct sk_buff* skb, int len)     
-    int headlen = skb_headlen(skb);
-    
-    skb->len = len;
-    
-    if (len - headlen > skb->data_len)
-    {
-        skb->data_len = len - headlen;
-        if (skb->data_len < 0)
-            skb->data_len = 0;
+static void skb_setlen(struct sk_buff* skb, int len)
+{
+    if (len > skb_headlen(skb)) {
+        skb->data_len -= skb->len - len;
+        skb->len       = len;
+    } else {
+        skb->len       = len;
+        skb->data_len  = 0;
+        skb_set_tail_pointer(skb, len);
     }
 }
 
