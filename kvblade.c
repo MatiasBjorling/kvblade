@@ -905,6 +905,7 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
         bio = rq_init_bio(rq);
         prefetchw(bio);
         
+        // Make sure the buffer is linear
         if (skb_linearize(skb) < 0) {
             kmem_cache_free(root.aoe_rq_cache, rq);
             trace_printk(KERN_ERR "Can't make SKB linear\n", ata->scnt);
@@ -913,7 +914,6 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
         
         if (rw == READ) {
             int pad = data_len - (skb->len - len);
-            int frag = skb_shinfo(skb)->nr_frags;
             struct page* page;
             
             // Add pages for all the MTU we are reading
