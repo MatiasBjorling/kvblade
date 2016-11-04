@@ -957,11 +957,6 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
 
         dt = (struct aoedev_thread*)per_cpu_ptr(d->devthread_percpu, t->cpu);
         atomic_inc(&dt->busy);
-        
-        if (unlikely(!pskb_may_pull(skb, ETH_HLEN))) {
-            teprintk("kvblade: failed to prepare the Ethernet header\n", ata->scnt);
-            goto drop;
-        }
 
         submit_bio(rw, bio);
         return NULL;
@@ -1064,6 +1059,17 @@ static void ktannounce(struct aoethread* t) {
 
 static struct sk_buff* conv_response(struct aoethread* t, struct sk_buff *skb, int major, int minor) {
     struct aoe_hdr *aoe;
+    struct net_device* target = skb->dev;
+    
+    // Setup other parameters
+    skb_scrub_packet(skb, false);
+    skb->dev = target;
+
+    // Set all the packet headers
+    skb_reset_mac_header(skb);
+    skb_reset_network_header(skb);
+    skb_reset_transport_header(skb);
+    skb_reset_mac_len(skb);
 
     aoe = (struct aoe_hdr *) skb_mac_header(skb);
     memcpy(aoe->dst, aoe->src, ETH_ALEN);
