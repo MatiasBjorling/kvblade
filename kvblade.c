@@ -881,6 +881,35 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
 
         bio = rq_init_bio(rq);
         prefetchw(bio);
+        
+        if (rw == READ) {
+            int pad = data_len - (skb->len - len);
+            int frag = skb_shinfo(skb)->nr_frags;
+            struct page* page;
+            
+            // Add pages for all the MTU we are reading
+            for (; pad > 0;) {
+                if (frag >= MAX_SKB_FRAGS) {
+                    trace_printk(KERN_ERR "No more frags left in AOE packet\n");
+                    goto drop;
+                }
+                page = alloc_page(GFP_ATOMIC | __GFP_DMA);
+                if (page == NULL) {                    
+                    trace_printk(KERN_ERR "Can't allocate page for AOE packet\n");
+                    goto drop;
+                }
+                get_page(page);
+                
+                frag_len = pad;
+                if (frag_len > PAGE_SIZE) frag_len = PAGE_SIZE;
+                skb_fill_page_desc(skb, frag++, page, 0, frag_len);
+                
+                skb->len += frag_len;
+                skb->data_len += frag_len;
+                skb->truesize += frag_len;
+                pad -= frag_len;
+            }
+        }
 
         rq->d = d;
         rq->t = t;
