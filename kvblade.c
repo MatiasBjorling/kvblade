@@ -847,6 +847,8 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
     ata = (struct aoe_atahdr *) aoe->data;
     lba = readlba(ata->lba);
     len = sizeof *aoe + sizeof *ata;
+    data_len = ata->scnt * KERNEL_SECTOR_SIZE;
+    
     switch (ata->cmdstat) {
         do {
             case ATA_CMD_PIO_READ:
@@ -920,7 +922,7 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
         bio->bi_end_io = ata_io_complete;
         bio->bi_private = rq;
 
-        if (ata_add_pages(ata, bio) <= 0) {
+        if (skb_add_pages(skb, bio, data_len) <= 0) {
             kmem_cache_free(root.aoe_rq_cache, rq);
             trace_printk(KERN_ERR "Can't bio_add_page for %d sectors\n", ata->scnt);
             goto drop;
