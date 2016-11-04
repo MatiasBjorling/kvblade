@@ -1106,6 +1106,7 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
             switch (aoe->cmd) {
                 case AOECMD_ATA:
                 {
+                    /*
                     struct aoe_atahdr *ata = (struct aoe_atahdr *) aoe->data;
                     if (ata->cmdstat == ATA_CMD_PIO_WRITE ||
                         ata->cmdstat == ATA_CMD_PIO_WRITE_EXT)
@@ -1118,6 +1119,9 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
                         rskb = clone_response(t, skb, d->major, d->minor);
                         if (rskb == NULL) goto out_dec;
                     }
+                    */
+                    rskb = clone_response(t, skb, d->major, d->minor);
+                    if (rskb == NULL) goto out_dec;
 
                     rskb = rcv_ata(d, t, rskb);
                     break;
