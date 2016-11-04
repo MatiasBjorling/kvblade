@@ -1084,9 +1084,17 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
             switch (aoe->cmd) {
                 case AOECMD_ATA:
                 {
-                    rskb = clone_response(t, skb, d->major, d->minor);
-                    if (rskb == NULL)
-                        goto out_dec;
+                    struct aoe_atahdr *ata = (struct aoe_atahdr *) aoe->data;
+                    if (ata->cmdstat == ATA_CMD_ID_ATA)
+                    {
+                        rskb = clone_response(t, skb, d->major, d->minor);
+                        if (rskb == NULL) goto out_dec;
+                    }
+                    else {
+                        rskb = conv_response(t, skb, d->major, d->minor);
+                        if (rskb == NULL) goto out_dec;
+                        skb = NULL;
+                    }
 
                     rskb = rcv_ata(d, t, rskb);
                     break;
@@ -1116,16 +1124,16 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
                 rskb = NULL;
             }
 
+            // Reduced the busy count which will allow the device
+            // to be destroyed
+            atomic_dec(&dt->busy);
+
             // If its a specific address then we are finished
             if ((major == d->major && minor == d->minor) ||
                 skb == NULL)
             {
-                goto out_dec;
+                goto out;
             }
-
-            // Reduced the busy count which will allow the device
-            // to be destroyed
-            atomic_dec(&dt->busy);
         }
     }
 
@@ -1136,7 +1144,8 @@ out_dec:
 out:
     // We need to leave the RCU and release the SKB
     rcu_read_unlock();
-    dev_kfree_skb(skb);
+    if (skb != NULL)
+        dev_kfree_skb(skb);
 }
 
 static int rcv(struct sk_buff *skb, struct net_device *ndev, struct packet_type *pt, struct net_device *orig_dev) {
