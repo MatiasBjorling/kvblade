@@ -905,6 +905,12 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
         bio = rq_init_bio(rq);
         prefetchw(bio);
         
+        if (skb_linearize(skb) < 0) {
+            kmem_cache_free(root.aoe_rq_cache, rq);
+            trace_printk(KERN_ERR "Can't make SKB linear\n", ata->scnt);
+            goto drop;
+        }
+        
         if (rw == READ) {
             int pad = data_len - (skb->len - len);
             int frag = skb_shinfo(skb)->nr_frags;
@@ -912,7 +918,14 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
             
             // Add pages for all the MTU we are reading
             if (pad > 0)
-                skb_pad(skb, pad);
+            {
+                if (unlikely(!skb_pad(skb, pad))) {
+                    trace_printk(KERN_ERR "failed to allocate request obj\n");
+                    ata->cmdstat = ATA_ERR;
+                    ata->errfeat = ATA_ABORTED;
+                    break;
+                }
+            }
         }
         else
             skb_set_len(skb, len);
@@ -925,12 +938,6 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
         bio->bi_bdev = d->blkdev;
         bio->bi_end_io = ata_io_complete;
         bio->bi_private = rq;
-        
-        if (skb_linearize(skb) < 0) {
-            kmem_cache_free(root.aoe_rq_cache, rq);
-            trace_printk(KERN_ERR "Can't make SKB linear\n", ata->scnt);
-            goto drop;
-        }
         
         if (ata_add_pages(ata, bio) <= 0) {
             kmem_cache_free(root.aoe_rq_cache, rq);
