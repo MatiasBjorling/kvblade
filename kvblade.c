@@ -908,9 +908,9 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
             break;
         }
 
-        rq = (aoereq_t*) kmem_cache_alloc_node(root.aoe_rq_cache, GFP_KERNEL, numa_node_id());
+        rq = (aoereq_t*) kmem_cache_alloc_node(root.aoe_rq_cache, GFP_KERNEL | __GFP_THISNODE, numa_node_id());
         if (unlikely(rq == NULL)) {
-            teprintk("failed to allocate request obj\n");
+            teprintk("failed to allocate ATA request memory\n");
             ata->errfeat = ATA_ABORTED;
             break;
         }
@@ -922,7 +922,7 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
         // Make sure the buffer is linear
         if (skb_linearize(skb) < 0) {
             kmem_cache_free(root.aoe_rq_cache, rq);
-            teprintk(KERN_ERR "can't make SKB linear %d\n", ata->scnt);
+            teprintk("can't make SKB linear %d\n", ata->scnt);
             ata->errfeat = ATA_ABORTED;
             break;
         }
@@ -936,7 +936,7 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
             {
                 if (unlikely(!skb_pad(skb, pad))) {
                     kmem_cache_free(root.aoe_rq_cache, rq);
-                    teprintk(KERN_ERR "failed to allocate request obj\n");
+                    teprintk("failed to allocate request obj\n");
                     ata->errfeat = ATA_ABORTED;
                     break;
                 }
@@ -956,7 +956,7 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
         
         if (ata_add_pages(ata, bio) <= 0) {
             kmem_cache_free(root.aoe_rq_cache, rq);
-            teprintk(KERN_ERR "Can't bio_add_page for %d sectors\n", ata->scnt);
+            teprintk("Can't bio_add_page for %d sectors\n", ata->scnt);
             ata->errfeat = ATA_ABORTED;
             goto drop;
         }
@@ -976,7 +976,7 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
         return NULL;
 
     default:
-        teprintk(KERN_ERR "Unknown ATA command 0x%02X\n", ata->cmdstat);
+        teprintk("Unknown ATA command 0x%02X\n", ata->cmdstat);
         ata->cmdstat = ATA_ERR;
         ata->errfeat = ATA_ABORTED;
         break;
