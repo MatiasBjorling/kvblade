@@ -722,7 +722,7 @@ static void ktcom(struct aoethread* t, struct sk_buff *skb) {
     dt = (struct aoedev_thread*)per_cpu_ptr(d->devthread_percpu, t->cpu);
     atomic_dec(&dt->busy);
     
-    skb->len = len;
+    skb_set_len(skb, len);
     dev_queue_xmit(skb);
 }
 
@@ -805,6 +805,14 @@ static int ata_add_pages(struct aoe_atahdr *ata, struct bio *bio) {
     }
     
     return len;
+}
+
+static void skb_set_len(struct sk_buff* skb, int len)
+{
+    skb->len = len;
+    
+    skb->data_len = len - skb_headlen(skb);
+    if (skb->data_len < 0) skb->data_len = 0;
 }
 
 static int skb_add_pages(struct sk_buff* skb, struct bio *bio, int len) {
@@ -913,7 +921,7 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
             }
         }
         else
-            skb->len = len;
+            skb_set_len(skb, len);
 
         rq->d = d;
         rq->t = t;
@@ -950,7 +958,7 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
         ata->errfeat = 0;
         break;
     }
-    skb_trim(skb, len);
+    
     return skb;
 drop:
     dev_kfree_skb(skb);
