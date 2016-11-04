@@ -1122,7 +1122,9 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
                 {
                     struct aoe_atahdr *ata = (struct aoe_atahdr *) aoe->data;
                     if (ata->cmdstat == ATA_CMD_PIO_WRITE ||
-                        ata->cmdstat == ATA_CMD_PIO_WRITE_EXT)
+                        ata->cmdstat == ATA_CMD_PIO_WRITE_EXT ||
+                        ata->cmdstat == ATA_CMD_PIO_READ ||
+                        ata->cmdstat == ATA_CMD_PIO_READ_EXT)
                     {
                         rskb = conv_response(t, skb, d->major, d->minor);
                         if (rskb == NULL) goto out_dec;
