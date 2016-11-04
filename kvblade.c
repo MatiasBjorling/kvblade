@@ -940,6 +940,9 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
         ata->errfeat = ATA_ABORTED;
         break;
     case ATA_CMD_ID_ATA:
+        if (skb_linearize(skb) < 0) {
+            goto drop;
+        }
         len += ata_identify(d, ata);
     case ATA_CMD_FLUSH:
         ata->cmdstat = ATA_DRDY;
@@ -957,6 +960,9 @@ static struct sk_buff* rcv_cfg(struct aoedev *d, struct aoethread *t, struct sk_
     struct aoe_hdr *aoe;
     struct aoe_cfghdr *cfg;
     int len, cslen, ccmd;
+    
+    if (skb_linearize(skb) < 0)
+        goto drop;
 
     aoe = (struct aoe_hdr *) skb_mac_header(skb);
     cfg = (struct aoe_cfghdr *) aoe->data;
