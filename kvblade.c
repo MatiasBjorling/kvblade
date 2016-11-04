@@ -924,7 +924,7 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
                 // If its already linear then attempt to simple add some padding
                 if (skb->data_len == 0 && skb_tailroom(skb) >= pad)
                 {
-                    __skb_put(skb, pad);
+                    skb_put(skb, pad);
                     
                 } else {
                     
