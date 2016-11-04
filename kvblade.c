@@ -861,13 +861,14 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
     struct aoedev_thread *dt;
     struct bio *bio;
     sector_t lba;
-    int len, rw, data_len, frag_len;
+    int len, rw, frag_len;
+    unsigned int data_len;
     
     aoe = (struct aoe_hdr *) skb_mac_header(skb);
     ata = (struct aoe_atahdr *) aoe->data;
     lba = readlba(ata->lba);
     len = sizeof *aoe + sizeof *ata;
-    data_len = ata->scnt * KERNEL_SECTOR_SIZE;
+    data_len = ata->scnt << 9;
     
     switch (ata->cmdstat) {
         do {
@@ -922,13 +923,14 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
                 }
                 get_page(page);
                 
+                trace_printk(KERN_ERR "read page add: (pad %d) (len %d) (data_len %d) (frag_len %d)\n", pad, skb->len, skb->data_len, frag_len);
+                
                 frag_len = pad;
                 if (frag_len > PAGE_SIZE) frag_len = PAGE_SIZE;
                 skb_fill_page_desc(skb, frag++, page, 0, frag_len);
                 
                 skb->len += frag_len;
                 skb->data_len += frag_len;
-                skb->truesize += frag_len;
                 pad -= frag_len;
             }
         }
