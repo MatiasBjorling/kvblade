@@ -1061,7 +1061,7 @@ static struct sk_buff* clone_response(struct aoethread* t, struct sk_buff *skb, 
     if (rskb == NULL)
         return NULL;
     
-    skb_copy_bits(skb, 0, skb_put(rskb, skb->len), skb->len);
+    skb_copy_bits(skb, 0, skb_mac_header(rskb), skb->len);
     conv_response(t, rskb, major, minor);
     return rskb;
 }
@@ -1096,7 +1096,7 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
                     if (ata->cmdstat == ATA_CMD_PIO_WRITE ||
                         ata->cmdstat == ATA_CMD_PIO_WRITE_EXT)
                     {
-                        if (skb->data_len > 0) {
+                        if (skb->data_len > 0) {                            
                             rskb = conv_response(t, skb, d->major, d->minor);
                             if (rskb == NULL) goto out;
                             skb = NULL;
