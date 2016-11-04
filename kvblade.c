@@ -828,6 +828,12 @@ static int skb_add_pages(struct sk_buff* skb, struct bio *bio, int len) {
     int sg_max = skb_shinfo(skb)->nr_frags + 2;
     struct scatterlist sg_tbl[sg_max], *sgentry;
     
+    // Validate that everything is ok
+    if (offset + len > skb->len) {
+        trace_printk(KERN_ERR "packet I/O is out of range: (%d), max %Lu\n", offset + len, skb->len);
+        return 0;
+    }
+    
     // Create the source scatterlist from the received packet
     sg_init_table(sg_tbl, sg_max);
     sg_n = skb_to_sgvec_nomark(skb, sg_tbl, offset, len);
