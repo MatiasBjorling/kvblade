@@ -17,7 +17,8 @@
 //#include "if_aoe.h"
 #include "aoe.h"
 
-#define TOK_DEBUG
+#define AOE_TOKERA
+#define AOE_DEBUG
 
 #define xprintk(L, fmt, arg...) printk(L "kvblade: " "%s: " fmt, __func__, ## arg)
 #define iprintk(fmt, arg...) xprintk(KERN_INFO, fmt, ## arg)
@@ -25,7 +26,7 @@
 #define wprintk(fmt, arg...) xprintk(KERN_WARN, fmt, ## arg)
 #define dprintk(fmt, arg...) if(0);else xprintk(KERN_DEBUG, fmt, ## arg)
 
-#ifdef TOK_DEBUG
+#ifdef AOE_DEBUG
 #define tiprintk(fmt, arg...) printk(KERN_INFO fmt, ## arg)
 #define teprintk(fmt, arg...) printk(KERN_ERR fmt, ## arg)
 #define twprintk(fmt, arg...) printk(KERN_WARN fmt, ## arg)
@@ -42,6 +43,15 @@
 #define MAXBUFFERS  512
 #define MAXIOVECS 16
 
+#ifdef AOE_TOKERA
+// Flags used by Tokera
+enum {
+    TOK_SKB_FLAG_PROCESSED = 1,     // The packet is (or should be) processed normally by Tokera
+    TOK_SKB_FLAG_REPLY = 2,         // The packet is a reply to another packet and thus it should be steering to the right CPU
+    TOK_SKB_FLAG_SPREAD = 4,        // Packet processing will be spread across the cores of the machine
+};
+#endif
+
 #if LINUX_VERSION_CODE <= KERNEL_VERSION(3,14,0)
 #define bio_sector(bio) ((bio)->bi_sector)
 #define bio_size(bio) ((bio)->bi_size)
@@ -55,29 +65,6 @@
 #ifndef KERNEL_SECTOR_SIZE
 #define KERNEL_SECTOR_SIZE 512
 #endif
-
-#define NET_CB_TOKER        "Toker"
-#define NET_CB_REPLY        "Reply"
-
-static void tok_net_skb_mark_tokera(struct sk_buff* skb, int affinity)
-{
-    memcpy(&skb->cb[0], NET_CB_TOKER, 5);
-    skb->cb[5] = affinity;
-}
-
-static void tok_net_skb_mark_relay(struct sk_buff* skb, int affinity)
-{
-    memcpy(&skb->cb[0], NET_CB_REPLY, 5);
-    skb->cb[5] = affinity;
-}
-
-static int tok_net_skb_affinity(struct sk_buff* skb, int def)
-{
-    if (memcmp(&skb->cb[0], NET_CB_TOKER, 5) == 0 ||
-        memcmp(&skb->cb[0], NET_CB_REPLY, 5) == 0)
-        return skb->cb[5];
-    return def;
-}
 
 enum {
     ATA_MODEL_LEN = 40,
@@ -1047,17 +1034,13 @@ static void ktannounce(struct aoethread* t) {
     return;
 }
 
-static struct sk_buff* conv_response(struct aoethread* t, struct sk_buff *skb, int major, int minor, int affinity) {
+static struct sk_buff* conv_response(struct aoethread* t, struct sk_buff *skb, int major, int minor) {
     struct aoe_hdr *aoe;
     struct net_device* target = skb->dev;
     
     // Setup other parameters
     skb_scrub_packet(skb, false);
     skb->dev = target;
-    
-    // Set the affinity
-    if (affinity != 256)
-        tok_net_skb_mark_relay(skb, affinity);
 
     // Set all the packet headers
     skb_reset_mac_header(skb);
@@ -1073,10 +1056,14 @@ static struct sk_buff* conv_response(struct aoethread* t, struct sk_buff *skb, i
     aoe->major = cpu_to_be16(major);
     aoe->minor = minor;
     aoe->err = 0;
+    
+#ifdef AOE_TOKERA
+    skb->tok_flags |= TOK_SKB_FLAG_REPLY;
+#endif
     return skb;
 }
 
-static struct sk_buff* clone_response(struct aoethread* t, struct sk_buff *skb, int major, int minor, int affinity) {
+static struct sk_buff* clone_response(struct aoethread* t, struct sk_buff *skb, int major, int minor) {
     struct sk_buff *rskb;
     
     if (skb->len > skb->dev->mtu)
@@ -1086,6 +1073,11 @@ static struct sk_buff* clone_response(struct aoethread* t, struct sk_buff *skb, 
         return NULL;
     
     skb_copy_bits(skb, 0, skb_mac_header(rskb), skb->len);
+
+#ifdef AOE_TOKERA
+    rskb->affinity = skb->affinity;
+#endif    
+    
     conv_response(t, rskb, major, minor, affinity);
     return rskb;
 }
@@ -1096,12 +1088,10 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
     struct aoedev_thread *dt;
     struct aoe_hdr* aoe;
     int major, minor;
-    int affinity;
     
     aoe = (struct aoe_hdr *) skb_mac_header(skb);
     major = be16_to_cpu(aoe->major);
     minor = aoe->minor;
-    affinity = tok_net_skb_affinity(skb, 256);
     
     rcu_read_lock();
     if (~aoe->verfl & AOEFL_RSP)
@@ -1123,16 +1113,16 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
                         ata->cmdstat == ATA_CMD_PIO_WRITE_EXT)
                     {
                         if (skb->data_len > 0) {                            
-                            rskb = conv_response(t, skb, d->major, d->minor, affinity);
+                            rskb = conv_response(t, skb, d->major, d->minor);
                             if (rskb == NULL) goto out;
                             skb = NULL;
                         } else {
-                            rskb = clone_response(t, skb, d->major, d->minor, affinity);
+                            rskb = clone_response(t, skb, d->major, d->minor);
                             if (rskb == NULL) goto out;
                         }
                     }
                     else {
-                        rskb = clone_response(t, skb, d->major, d->minor, affinity);
+                        rskb = clone_response(t, skb, d->major, d->minor);
                         if (rskb == NULL) goto out;
                     }
                     
@@ -1154,7 +1144,7 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
                 }
                 case AOECMD_CFG:
                 {
-                    rskb = clone_response(t, skb, d->major, d->minor, affinity);
+                    rskb = clone_response(t, skb, d->major, d->minor);
                     if (rskb == NULL)
                         goto out;
 
@@ -1183,17 +1173,9 @@ static int rcv(struct sk_buff *skb, struct net_device *ndev, struct packet_type 
     struct aoethread* t;
     int affinity;
     
-    affinity = tok_net_skb_affinity(skb, 256);
-    
     skb = skb_share_check(skb, GFP_ATOMIC);
     if (skb == NULL)
         return -ENOMEM;
-    
-    if (affinity != 256)
-    {
-        tiprintk("kvblade: caller CPU affinity (%d)\n", affinity);
-        tok_net_skb_mark_relay(skb, affinity);
-    }
     
     skb_push(skb, ETH_HLEN);
     if (unlikely(!pskb_may_pull(skb, sizeof(struct aoe_hdr) + sizeof(struct aoe_atahdr))))
