@@ -1076,7 +1076,7 @@ static struct sk_buff* conv_response(struct aoethread* t, struct sk_buff *skb, i
     return skb;
 }
 
-static struct sk_buff* clone_response(struct aoethread* t, struct sk_buff *skb, int major, int minor) {
+static struct sk_buff* clone_response(struct aoethread* t, struct sk_buff *skb, int major, int minor, int affinity) {
     struct sk_buff *rskb;
     
     if (skb->len > skb->dev->mtu)
@@ -1096,10 +1096,12 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
     struct aoedev_thread *dt;
     struct aoe_hdr* aoe;
     int major, minor;
+    int affinity;
     
     aoe = (struct aoe_hdr *) skb_mac_header(skb);
     major = be16_to_cpu(aoe->major);
     minor = aoe->minor;
+    affinity = tok_net_skb_affinity(skb, 256);
     
     rcu_read_lock();
     if (~aoe->verfl & AOEFL_RSP)
@@ -1121,16 +1123,16 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
                         ata->cmdstat == ATA_CMD_PIO_WRITE_EXT)
                     {
                         if (skb->data_len > 0) {                            
-                            rskb = conv_response(t, skb, d->major, d->minor, tok_net_skb_affinity(skb, 256));
+                            rskb = conv_response(t, skb, d->major, d->minor, affinity);
                             if (rskb == NULL) goto out;
                             skb = NULL;
                         } else {
-                            rskb = clone_response(t, skb, d->major, d->minor);
+                            rskb = clone_response(t, skb, d->major, d->minor, affinity);
                             if (rskb == NULL) goto out;
                         }
                     }
                     else {
-                        rskb = clone_response(t, skb, d->major, d->minor);
+                        rskb = clone_response(t, skb, d->major, d->minor, affinity);
                         if (rskb == NULL) goto out;
                     }
                     
@@ -1152,7 +1154,7 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
                 }
                 case AOECMD_CFG:
                 {
-                    rskb = clone_response(t, skb, d->major, d->minor);
+                    rskb = clone_response(t, skb, d->major, d->minor, affinity);
                     if (rskb == NULL)
                         goto out;
 
