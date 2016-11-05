@@ -56,6 +56,29 @@
 #define KERNEL_SECTOR_SIZE 512
 #endif
 
+#define NET_CB_TOKER        "Toker"
+#define NET_CB_REPLY        "Reply"
+
+void tok_net_skb_mark_tokera(struct sk_buff* skb, int affinity)
+{
+    memcpy(&skb->cb[0], NET_CB_TOKER, 5);
+    skb->cb[5] = affinity;
+}
+
+void tok_net_skb_mark_relay(struct sk_buff* skb, int affinity)
+{
+    memcpy(&skb->cb[0], NET_CB_REPLY, 5);
+    skb->cb[5] = affinity;
+}
+
+int tok_net_skb_affinity(struct sk_buff* skb, int def)
+{
+    if (memcmp(&skb->cb[0], NET_CB_TOKER, 5) == 0 ||
+        memcmp(&skb->cb[0], NET_CB_REPLY, 5) == 0)
+        return skb->cb[5];
+    return def;
+}
+
 enum {
     ATA_MODEL_LEN = 40,
     ATA_LBA28MAX = 0x0fffffff,
@@ -1024,13 +1047,17 @@ static void ktannounce(struct aoethread* t) {
     return;
 }
 
-static struct sk_buff* conv_response(struct aoethread* t, struct sk_buff *skb, int major, int minor) {
+static struct sk_buff* conv_response(struct aoethread* t, struct sk_buff *skb, int major, int minor, int affinity) {
     struct aoe_hdr *aoe;
     struct net_device* target = skb->dev;
     
     // Setup other parameters
     skb_scrub_packet(skb, false);
     skb->dev = target;
+    
+    // Set the affinity
+    if (affinity != 256)
+        tok_net_skb_mark_relay(skb, affinity);
 
     // Set all the packet headers
     skb_reset_mac_header(skb);
@@ -1051,6 +1078,9 @@ static struct sk_buff* conv_response(struct aoethread* t, struct sk_buff *skb, i
 
 static struct sk_buff* clone_response(struct aoethread* t, struct sk_buff *skb, int major, int minor) {
     struct sk_buff *rskb;
+    int affinity;
+    
+    affinity = tok_net_skb_affinity(skb, 256);
     
     if (skb->len > skb->dev->mtu)
         return NULL;
@@ -1059,7 +1089,7 @@ static struct sk_buff* clone_response(struct aoethread* t, struct sk_buff *skb, 
         return NULL;
     
     skb_copy_bits(skb, 0, skb_mac_header(rskb), skb->len);
-    conv_response(t, rskb, major, minor);
+    conv_response(t, rskb, major, minor, affinity);
     return rskb;
 }
 
@@ -1094,7 +1124,7 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
                         ata->cmdstat == ATA_CMD_PIO_WRITE_EXT)
                     {
                         if (skb->data_len > 0) {                            
-                            rskb = conv_response(t, skb, d->major, d->minor);
+                            rskb = conv_response(t, skb, d->major, d->minor, tok_net_skb_affinity(skb, 256));
                             if (rskb == NULL) goto out;
                             skb = NULL;
                         } else {
