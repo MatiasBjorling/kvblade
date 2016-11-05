@@ -860,7 +860,7 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
     struct aoedev_thread *dt;
     struct bio *bio;
     sector_t lba;
-    int len, rw, frag_len;
+    int len, rw;
     unsigned int data_len;
     
     aoe = (struct aoe_hdr *) skb_mac_header(skb);
@@ -1078,7 +1078,7 @@ static struct sk_buff* clone_response(struct aoethread* t, struct sk_buff *skb, 
     rskb->affinity = skb->affinity;
 #endif    
     
-    conv_response(t, rskb, major, minor, affinity);
+    conv_response(t, rskb, major, minor);
     return rskb;
 }
 
@@ -1171,7 +1171,6 @@ out:
 
 static int rcv(struct sk_buff *skb, struct net_device *ndev, struct packet_type *pt, struct net_device *orig_dev) {
     struct aoethread* t;
-    int affinity;
     
     skb = skb_share_check(skb, GFP_ATOMIC);
     if (skb == NULL)
