@@ -59,19 +59,19 @@
 #define NET_CB_TOKER        "Toker"
 #define NET_CB_REPLY        "Reply"
 
-void tok_net_skb_mark_tokera(struct sk_buff* skb, int affinity)
+static void tok_net_skb_mark_tokera(struct sk_buff* skb, int affinity)
 {
     memcpy(&skb->cb[0], NET_CB_TOKER, 5);
     skb->cb[5] = affinity;
 }
 
-void tok_net_skb_mark_relay(struct sk_buff* skb, int affinity)
+static void tok_net_skb_mark_relay(struct sk_buff* skb, int affinity)
 {
     memcpy(&skb->cb[0], NET_CB_REPLY, 5);
     skb->cb[5] = affinity;
 }
 
-int tok_net_skb_affinity(struct sk_buff* skb, int def)
+static int tok_net_skb_affinity(struct sk_buff* skb, int def)
 {
     if (memcmp(&skb->cb[0], NET_CB_TOKER, 5) == 0 ||
         memcmp(&skb->cb[0], NET_CB_REPLY, 5) == 0)
@@ -1078,9 +1078,6 @@ static struct sk_buff* conv_response(struct aoethread* t, struct sk_buff *skb, i
 
 static struct sk_buff* clone_response(struct aoethread* t, struct sk_buff *skb, int major, int minor) {
     struct sk_buff *rskb;
-    int affinity;
-    
-    affinity = tok_net_skb_affinity(skb, 256);
     
     if (skb->len > skb->dev->mtu)
         return NULL;
@@ -1182,10 +1179,19 @@ out:
 
 static int rcv(struct sk_buff *skb, struct net_device *ndev, struct packet_type *pt, struct net_device *orig_dev) {
     struct aoethread* t;
+    int affinity;
+    
+    affinity = tok_net_skb_affinity(skb, 256);
     
     skb = skb_share_check(skb, GFP_ATOMIC);
     if (skb == NULL)
         return -ENOMEM;
+    
+    if (affinity != 256)
+    {
+        tiprintk("kvblade: caller CPU affinity (%d)\n", affinity);
+        tok_net_skb_mark_relay(skb, affinity);
+    }
     
     skb_push(skb, ETH_HLEN);
     if (unlikely(!pskb_may_pull(skb, sizeof(struct aoe_hdr) + sizeof(struct aoe_atahdr))))
