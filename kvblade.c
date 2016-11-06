@@ -1227,6 +1227,7 @@ static int kthread(void* data) {
     struct aoethread* t = (struct aoethread*)data;
     
     sigset_t blocked;
+    int work;
     
     skb_queue_head_init(&t->skb_outq);
     skb_queue_head_init(&t->skb_inq);
