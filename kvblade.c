@@ -1194,6 +1194,34 @@ static int rcv(struct sk_buff *skb, struct net_device *ndev, struct packet_type 
     return 0;
 }
 
+static int kthread_work(struct aoethread* t) {
+    int ret = 0;
+    
+    do {
+        if ((iskb = skb_dequeue(&t->skb_inq))) {
+            ktrcv(t, iskb);
+            ret = 1;
+        }
+        if ((cskb = skb_dequeue(&t->skb_com))) {
+            ktcom(t, cskb);
+            ret = 1;
+        }
+        if ((oskb = skb_dequeue(&t->skb_outq))) {
+            dev_queue_xmit(oskb);
+            ret = 1;
+        }
+
+    } while (iskb || cskb || oskb);
+    
+    if (atomic_xchg(&t->announce_all, 0) > 0) {
+        //printk(KERN_INFO "kvblade: kvblade announce on cpu(%d)\n", smp_processor_id());
+        ktannounce(t);
+        ret = 1;
+    }
+    
+    return ret;
+}
+
 static int kthread(void* data) {
     struct sk_buff *iskb, *oskb, *cskb;
     struct aoethread* t = (struct aoethread*)data;
@@ -1207,7 +1235,7 @@ static int kthread(void* data) {
 #ifdef PF_NOFREEZE
     current->flags |= PF_NOFREEZE;
 #endif
-    set_user_nice(current, -10);
+    set_user_nice(current, -5);
     sigfillset(&blocked);
     sigprocmask(SIG_BLOCK, &blocked, NULL);
     flush_signals(current);
@@ -1216,25 +1244,36 @@ static int kthread(void* data) {
     printk(KERN_INFO "kvblade: started a new kvblade thread (%d)\n", smp_processor_id());
     
     do {
-        set_current_state(TASK_INTERRUPTIBLE);
+        // When we are woken, the most important thing is to get straight
+        // into working (this is on the critical latency path)
+        work = kthread_work(t);
         
-        if (atomic_xchg(&t->announce_all, 0) > 0) {
-            //printk(KERN_INFO "kvblade: kvblade announce on cpu(%d)\n", smp_processor_id());
-            ktannounce(t);
-            continue;
+        // Enter a loop that processes work continuous until no work
+        // is found up after a complete schedule
+        set_current_state(TASK_RUNNING);
+        for (; work == 1 && !kthread_should_stop();)
+        {
+            // Schedule
+            schedule();
+            
+            // Now check for more work
+            // (if none is found then we'll go into sleep mode)
+            work = kthread_work(t);
         }
         
-        do {
-            if ((iskb = skb_dequeue(&t->skb_inq)))
-                ktrcv(t, iskb);
-            if ((cskb = skb_dequeue(&t->skb_com)))
-                ktcom(t, cskb);
-            if ((oskb = skb_dequeue(&t->skb_outq)))
-                dev_queue_xmit(oskb);
-            
-        } while (iskb || cskb || oskb);
+        // We have to process work after setting INTERRUPTIBLE or we risk missing a
+        // wake up in between
+        set_current_state(TASK_INTERRUPTIBLE);
+        work = kthread_work(t);
         
-        schedule();
+        // If work was not found then we are good to go into a sleep operation
+        // (which may be really short if the task is woker again via wake_up_process)
+        if (work == 0 && !kthread_should_stop())
+        {
+            // Scheduling while in an INTERRUPTIBLE state will cause this
+            // worker thread to go to sleep
+            schedule();
+        }
         
     } while (!kthread_should_stop());
     
