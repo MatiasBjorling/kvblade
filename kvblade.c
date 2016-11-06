@@ -1070,7 +1070,7 @@ static struct sk_buff* clone_response(struct aoethread* t, struct sk_buff *skb, 
 
 #ifdef AOE_TOKERA
     rskb->affinity = skb->affinity;
-    rskb->dev = skb->dev;
+    rskb->skb_iif = skb->skb_iif;
 #endif    
     
     conv_response(t, rskb, major, minor);
