@@ -1207,7 +1207,7 @@ static int kthread(void* data) {
 #ifdef PF_NOFREEZE
     current->flags |= PF_NOFREEZE;
 #endif
-    set_user_nice(current, -20);
+    set_user_nice(current, -10);
     sigfillset(&blocked);
     sigprocmask(SIG_BLOCK, &blocked, NULL);
     flush_signals(current);
