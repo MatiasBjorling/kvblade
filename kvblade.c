@@ -1196,6 +1196,7 @@ static int rcv(struct sk_buff *skb, struct net_device *ndev, struct packet_type 
 
 static int kthread_work(struct aoethread* t) {
     int ret = 0;
+    struct sk_buff *iskb, *oskb, *cskb;
     
     do {
         if ((iskb = skb_dequeue(&t->skb_inq))) {
@@ -1223,7 +1224,6 @@ static int kthread_work(struct aoethread* t) {
 }
 
 static int kthread(void* data) {
-    struct sk_buff *iskb, *oskb, *cskb;
     struct aoethread* t = (struct aoethread*)data;
     
     sigset_t blocked;
