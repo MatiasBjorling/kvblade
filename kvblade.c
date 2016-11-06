@@ -232,13 +232,7 @@ static int count_busy(struct aoedev *d) {
 
 static void wake(struct aoethread* t)
 {
-    if (t->cpu == smp_processor_id()) {
-        if (t->task->state == TASK_INTERRUPTIBLE)
-            wake_up_process(t->task);
-    }
-    else {
-        wake_up_process(t->task);
-    }
+    wake_up_process(t->task);
 }
 
 static int ata_maxsectors(struct aoedev *d) {
@@ -1076,6 +1070,7 @@ static struct sk_buff* clone_response(struct aoethread* t, struct sk_buff *skb, 
 
 #ifdef AOE_TOKERA
     rskb->affinity = skb->affinity;
+    rskb->dev = skb->dev;
 #endif    
     
     conv_response(t, rskb, major, minor);
