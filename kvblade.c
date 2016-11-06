@@ -1031,10 +1031,16 @@ static void ktannounce(struct aoethread* t) {
 static struct sk_buff* conv_response(struct aoethread* t, struct sk_buff *skb, int major, int minor) {
     struct aoe_hdr *aoe;
     struct net_device* target = skb->dev;
+#ifdef AOE_TOKERA
+    int iff = skb->skb_iif;
+#endif
     
     // Setup other parameters
     skb_scrub_packet(skb, false);
     skb->dev = target;
+#ifdef AOE_TOKERA
+    skb->skb_iif = iff;
+#endif
 
     // Set all the packet headers
     skb_reset_mac_header(skb);
