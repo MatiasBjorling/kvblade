@@ -40,7 +40,7 @@
 #define nelem(A) (sizeof (A) / sizeof (A)[0])
 
 #define MAXSECTORS(mtu) (((mtu) - sizeof (struct aoe_hdr) - sizeof (struct aoe_atahdr)) / 512)
-#define MAXBUFFERS  512
+#define MAXBUFFERS  1024
 #define MAXIOVECS 16
 
 #ifdef AOE_TOKERA
