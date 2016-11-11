@@ -785,12 +785,12 @@ static void ata_io_complete(struct bio *bio, int error) {
         atomic_dec(&dt->busy);
     }
     rq->t = t;
-    if (in_interrupt()) {
-        skb_queue_tail(&t->skb_com, skb);
-        wake(t);
-    } else {
+    //if (in_interrupt()) {
+        //skb_queue_tail(&t->skb_com, skb);
+        //wake(t);
+    //} else {
         ktcom(t, skb);
-    }
+    //}
     put_cpu();
 }
 
