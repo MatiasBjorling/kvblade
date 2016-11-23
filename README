@@ -73,8 +73,8 @@ Testing:
 * MTU: 1024 bytes
 
 Results
-* Command: dd if=/dev/zero of=/dev/etherd/e1.0 bs=409600 count=1000 oflag=direct
+* Command: dd if=/dev/zero of=/dev/etherd/e1.0 bs=1MB count=1000 oflag=direct
 * Previous bandwidth: 80Mbit/s
-* Current bandwidth: 536Mbit/s
+* Current bandwidth: 4792Mbit/s
 * Previous IOPS: 10k IOPS
-* Current IOPS: 68k IOPS
+* Current IOPS: 153k IOPS
