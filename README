@@ -63,14 +63,14 @@ Improvements:
 
 Testing:
 * Tested on kernel 4.2.9
-* Number of physical server: 4
+* Number of physical server: 3
 * Number of physical CPUs: 2
 * Cores per CPU: 12
 * RAM: 96GB
-* Networking: 1GBit/s
+* Networking: 10GBit/s
 * Disks: SSD (1GB) and HDD (4GB)
-* Blocksize: 512 bytes
-* MTU: 1024 bytes
+* Blocksize: 4096 bytes
+* MTU: 8192 bytes
 
 Results
 * Command: dd if=/dev/zero of=/dev/etherd/e1.0 bs=1MB count=1000 oflag=direct
