@@ -732,7 +732,12 @@ static void ktcom(struct aoethread* t, struct sk_buff *skb) {
         bytes = ata->scnt << 9;
 
     len = sizeof *aoe + sizeof *ata;
+    
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(4,2,8)
     if (bio_flagged(bio, BIO_UPTODATE)) {
+#else
+    if (!bio->bi_error) {
+#endif
         if (bio_data_dir(bio) == READ)
             len += bytes;
         ata->scnt = 0;
@@ -740,7 +745,11 @@ static void ktcom(struct aoethread* t, struct sk_buff *skb) {
         ata->errfeat = 0;
         // should increment lba here, too
     } else {
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(4,2,8)
         printk(KERN_ERR "kvblade: I/O error %d on %s\n", error, d->kobj.name);
+#else
+        printk(KERN_ERR "kvblade: I/O error %d on %s\n", bio->bi_error, d->kobj.name);
+#endif
         ata->cmdstat = ATA_ERR | ATA_DF;
         ata->errfeat = ATA_UNC | ATA_ABORTED;
     }
@@ -760,7 +769,12 @@ static void ktcom(struct aoethread* t, struct sk_buff *skb) {
     kmem_cache_free(root.aoe_rq_cache, rq);
 }
 
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(4,2,8)
 static void ata_io_complete(struct bio *bio, int error) {
+#else
+static void ata_io_complete(struct bio *bio) {
+    int    error = bio->bi_error;
+#endif
     struct aoethread *t;
     struct aoedev* d;
     struct aoedev_thread* dt;
@@ -935,7 +949,15 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
         dt = (struct aoedev_thread*)per_cpu_ptr(d->devthread_percpu, t->cpu);
         atomic_inc(&dt->busy);
 
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(4,2,8)
         submit_bio(rw, bio);
+#else
+        if (rw == WRITE)
+            bio_set_op_attrs(bio, REQ_OP_WRITE, 0);
+        else
+            bio_set_op_attrs(bio, REQ_OP_READ, 0);
+        submit_bio(bio);
+#endif
         return NULL;
 
     default:
