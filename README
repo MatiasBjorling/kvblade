@@ -63,18 +63,18 @@ Improvements:
 
 Testing:
 * Tested on kernel 4.2.9
-* Number of physical server: 4
+* Number of physical server: 3
 * Number of physical CPUs: 2
 * Cores per CPU: 12
 * RAM: 96GB
-* Networking: 1GBit/s
+* Networking: 10GBit/s
 * Disks: SSD (1GB) and HDD (4GB)
-* Blocksize: 512 bytes
-* MTU: 1024 bytes
+* Blocksize: 4096 bytes
+* MTU: 8192 bytes
 
 Results
-* Command: dd if=/dev/zero of=/dev/etherd/e1.0 bs=409600 count=1000 oflag=direct
+* Command: dd if=/dev/zero of=/dev/etherd/e1.0 bs=1MB count=1000 oflag=direct
 * Previous bandwidth: 80Mbit/s
-* Current bandwidth: 536Mbit/s
+* Current bandwidth: 4792Mbit/s
 * Previous IOPS: 10k IOPS
-* Current IOPS: 68k IOPS
+* Current IOPS: 153k IOPS
