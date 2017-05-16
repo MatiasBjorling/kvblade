@@ -1,5 +1,5 @@
 
-kvblade: a 4.2+ linux kernel module
+kvblade: a 4.2 to 4.8+ linux kernel module
 ---
 
 Kvblade is a kernel module implementing the target
@@ -62,7 +62,7 @@ Improvements:
 * Removed a cache line hot spot on aoedev.busy which was using atomic operations
 
 Testing:
-* Tested on kernel 4.2.9
+* Tested on kernel 4.8.17
 * Number of physical server: 3
 * Number of physical CPUs: 2
 * Cores per CPU: 12
