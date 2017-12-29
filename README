@@ -50,6 +50,7 @@ those many years ago.
 Forked for the Tokera initiative
 
 Improvements:
+* Added support for linux kernel version 4.14.9 (long term kernel)
 * Fixed a compile issue caused by the changed field bi_sector in BIO objects
 * Removed the 16 static buffers and replaced them with 512 slab objects that are NUMA aligned
 * Imported the AOE headers from the latest linux kernel version (4.2.9 - 4.8)

@@ -5,6 +5,8 @@
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 #include <linux/workqueue.h>
+#include <linux/signal.h>
+#include <linux/sched/signal.h>
 #include <linux/blkdev.h>
 #include <linux/netdevice.h>
 #include <linux/fs.h>
@@ -46,7 +48,7 @@
 #ifdef AOE_TOKERA
 // Flags used by Tokera
 enum {
-    TOK_SKB_FLAG_PROCESSED = 1,     // The packet is (or should be) processed normally by Tokera
+    TOK_SKB_FLAG_RESERVED = 1,      // Flag reserved for future use
     TOK_SKB_FLAG_REPLY = 2,         // The packet is a reply to another packet and thus it should be steering to the right CPU
     TOK_SKB_FLAG_SPREAD = 4,        // Packet processing will be spread across the cores of the machine
 };
@@ -735,8 +737,10 @@ static void ktcom(struct aoethread* t, struct sk_buff *skb) {
     
 #if LINUX_VERSION_CODE <= KERNEL_VERSION(4,2,8)
     if (bio_flagged(bio, BIO_UPTODATE)) {
-#else
+#elif LINUX_VERSION_CODE <= KERNEL_VERSION(4,13,0)
     if (!bio->bi_error) {
+#else
+    if (!bio->bi_status) {
 #endif
         if (bio_data_dir(bio) == READ)
             len += bytes;
@@ -747,8 +751,10 @@ static void ktcom(struct aoethread* t, struct sk_buff *skb) {
     } else {
 #if LINUX_VERSION_CODE <= KERNEL_VERSION(4,2,8)
         printk(KERN_ERR "kvblade: I/O error %d on %s\n", error, d->kobj.name);
-#else
+#elif LINUX_VERSION_CODE <= KERNEL_VERSION(4,13,0)
         printk(KERN_ERR "kvblade: I/O error %d on %s\n", bio->bi_error, d->kobj.name);
+#else
+        printk(KERN_ERR "kvblade: I/O error %d on %s\n", blk_status_to_errno(bio->bi_status), d->kobj.name);
 #endif
         ata->cmdstat = ATA_ERR | ATA_DF;
         ata->errfeat = ATA_UNC | ATA_ABORTED;
@@ -770,10 +776,13 @@ static void ktcom(struct aoethread* t, struct sk_buff *skb) {
 }
 
 #if LINUX_VERSION_CODE <= KERNEL_VERSION(4,2,8)
-static void ata_io_complete(struct bio *bio, int error) {
-#else
+static void ata_io_complete(struct bio *bio, int error) {    
+#elif LINUX_VERSION_CODE <= KERNEL_VERSION(4,13,0)
 static void ata_io_complete(struct bio *bio) {
     int    error = bio->bi_error;
+#else
+static void ata_io_complete(struct bio *bio) {
+    int    error = blk_status_to_errno(bio->bi_status);
 #endif
     struct aoethread *t;
     struct aoedev* d;
@@ -821,11 +830,15 @@ static inline loff_t readlba(u8 *lba) {
 
 static struct bio* rq_init_bio(struct aoereq *rq)
 {
-    struct bio *bio;    
+    struct bio *bio;
     bio = &rq->bio;
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(4,10,0)
     bio_init(bio);
     bio->bi_max_vecs = MAXIOVECS;
     bio->bi_io_vec = bio->bi_inline_vecs;
+#else
+    bio_init(bio, bio->bi_inline_vecs, MAXIOVECS);
+#endif
     return bio;
 }
 
@@ -936,7 +949,11 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
         rq->skb = skb;
 
         bio_sector(bio) = lba;
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(4,14,0)
         bio->bi_bdev = d->blkdev;
+#else
+        bio_set_dev(bio, d->blkdev);
+#endif
         bio->bi_end_io = ata_io_complete;
         bio->bi_private = rq;
 
