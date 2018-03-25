@@ -19,7 +19,7 @@
 //#include "if_aoe.h"
 #include "aoe.h"
 
-#define AOE_TOKERA
+//#define AOE_TOKERA
 #define AOE_DEBUG
 
 #define xprintk(L, fmt, arg...) printk(L "kvblade: " "%s: " fmt, __func__, ## arg)
