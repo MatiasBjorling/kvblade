@@ -426,19 +426,18 @@ static ssize_t kvblade_readd(u32 major, u32 minor, char *ifname, char *path) {
     if (d == NULL) {
         printk(KERN_ERR "kvblade: readd failed: device %d.%d@%s does not exist\n", major, minor, ifname);
         ret = -ENOENT;
-        goto outrcu;
+        goto out;
     }
     
     // Replace the block device reference and release the old one
-    obd = b->blkdev;
-    b->blkdev = bd;
+    obd = d->blkdev;
+    d->blkdev = bd;
     bd = NULL;
     
     // We are finished (fall through to the exit code)
     
-outrcu:
-    rcu_read_unlock();
 out:
+    rcu_read_unlock();
     spin_unlock(&root.lock);
     if (bd != NULL) {
         blkdev_put(bd, FMODE_READ | FMODE_WRITE);
