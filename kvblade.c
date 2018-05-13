@@ -19,7 +19,6 @@
 //#include "if_aoe.h"
 #include "aoe.h"
 
-//#define AOE_TOKERA
 #define AOE_DEBUG
 
 #define xprintk(L, fmt, arg...) printk(L "kvblade: " "%s: " fmt, __func__, ## arg)
@@ -44,15 +43,6 @@
 #define MAXSECTORS(mtu) (((mtu) - sizeof (struct aoe_hdr) - sizeof (struct aoe_atahdr)) / 512)
 #define MAXBUFFERS  1024
 #define MAXIOVECS 16
-
-#ifdef AOE_TOKERA
-// Flags used by Tokera
-enum {
-    TOK_SKB_FLAG_RESERVED = 1,      // Flag reserved for future use
-    TOK_SKB_FLAG_REPLY = 2,         // The packet is a reply to another packet and thus it should be steering to the right CPU
-    TOK_SKB_FLAG_SPREAD = 4,        // Packet processing will be spread across the cores of the machine
-};
-#endif
 
 #if LINUX_VERSION_CODE <= KERNEL_VERSION(3,14,0)
 #define bio_sector(bio) ((bio)->bi_sector)
@@ -405,6 +395,62 @@ err:
     return ret;
 }
 
+static ssize_t kvblade_readd(u32 major, u32 minor, char *ifname, char *path) {
+    struct aoedev *d, *td;
+    struct block_device *obd = NULL; 
+    struct block_device *bd = NULL; 
+    int ret = 0;
+    
+    printk("kvblade: kvblade_readd\n");
+    
+    bd = blkdev_get_by_path(path, FMODE_READ | FMODE_WRITE, NULL);
+    if (!bd || IS_ERR(bd)) {
+        printk(KERN_ERR "kvblade: readd failed: can't open block device %s: %ld\n", path, PTR_ERR(bd));
+        return -ENOENT;
+    }
+    
+    spin_lock(&root.lock);
+    
+    d = NULL;
+    rcu_read_lock();
+    hlist_for_each_entry_rcu_notrace(td, &root.devlist, node) {
+        if (d->major == major &&
+                d->minor == minor &&
+                strcmp(d->netdev->name, ifname) == 0)
+        {
+            d = td;
+            break;
+        }
+    }
+    
+    if (d == NULL) {
+        printk(KERN_ERR "kvblade: readd failed: device %d.%d@%s does not exist\n", major, minor, ifname);
+        ret = -ENOENT;
+        goto outrcu;
+    }
+    
+    // Replace the block device reference and release the old one
+    obd = b->blkdev;
+    b->blkdev = bd;
+    bd = NULL;
+    
+    // We are finished (fall through to the exit code)
+    
+outrcu:
+    rcu_read_unlock();
+out:
+    spin_unlock(&root.lock);
+    if (bd != NULL) {
+        blkdev_put(bd, FMODE_READ | FMODE_WRITE);
+        bd = NULL;
+    }
+    if (obd != NULL) {
+        blkdev_put(obd, FMODE_READ | FMODE_WRITE);
+        obd = NULL;
+    }
+    return ret;
+}
+
 void kvblade_del_rcu(struct rcu_head* head)
 {
     struct aoedev *d;
@@ -483,7 +529,6 @@ static ssize_t store_add(struct aoedev *dev, const char *page, size_t len) {
     return error ? error : len;
 }
 
-
 static struct kvblade_sysfs_entry kvblade_sysfs_add = __ATTR(add, 0644, NULL, store_add);
 
 static ssize_t store_del(struct aoedev *dev, const char *page, size_t len) {
@@ -508,6 +553,29 @@ static ssize_t store_del(struct aoedev *dev, const char *page, size_t len) {
 }
 
 static struct kvblade_sysfs_entry kvblade_sysfs_del = __ATTR(del, 0644, NULL, store_del);
+
+static ssize_t store_readd(struct aoedev *dev, const char *page, size_t len) {
+    int error = 0;
+    char *argv[16];
+    char *p;
+
+    p = kmalloc(len + 1, GFP_KERNEL);
+    memcpy(p, page, len);
+    p[len] = '\0';
+
+    if (kvblade_sysfs_args(p, argv, nelem(argv)) != 4) {
+        printk(KERN_ERR "kvblade: bad arg count for readd\n");
+        error = -EINVAL;
+    } else
+        error = kvblade_readd(simple_strtoul(argv[0], NULL, 0),
+            simple_strtoul(argv[1], NULL, 0),
+            argv[2], argv[3]);
+
+    kfree(p);
+    return error ? error : len;
+}
+
+static struct kvblade_sysfs_entry kvblade_sysfs_readd = __ATTR(readd, 0644, NULL, store_readd);
 
 static ssize_t store_announce(struct aoedev *dev, const char *page, size_t len) {
     int error = 0;
@@ -589,6 +657,7 @@ static struct attribute *kvblade_ktype_attrs[] = {
 static struct attribute *kvblade_ktype_ops_attrs[] = {
     &kvblade_sysfs_add.attr,
     &kvblade_sysfs_del.attr,
+    &kvblade_sysfs_readd.attr,
     &kvblade_sysfs_announce.attr,
     NULL,
 };
@@ -1088,11 +1157,7 @@ static struct sk_buff* conv_response(struct aoethread* t, struct sk_buff *skb, i
     aoe->verfl = AOE_HVER | AOEFL_RSP;
     aoe->major = cpu_to_be16(major);
     aoe->minor = minor;
-    aoe->err = 0;
-    
-#ifdef AOE_TOKERA
-    skb->tok_flags |= TOK_SKB_FLAG_REPLY;
-#endif
+    aoe->err = 0;   
     return skb;
 }
 
@@ -1107,10 +1172,6 @@ static struct sk_buff* clone_response(struct aoethread* t, struct sk_buff *skb, 
     
     skb_copy_bits(skb, 0, skb_mac_header(rskb), skb->len);
 
-#ifdef AOE_TOKERA
-    rskb->affinity = skb->affinity;
-#endif    
-    
     conv_response(t, rskb, major, minor);
     return rskb;
 }
