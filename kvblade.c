@@ -424,6 +424,8 @@ static ssize_t kvblade_readd(u32 major, u32 minor, char *ifname, char *path) {
     }
     
     if (d == NULL) {
+        rcu_read_unlock();
+        spin_unlock(&root.lock);
         printk(KERN_ERR "kvblade: readd failed: device %d.%d@%s does not exist\n", major, minor, ifname);
         ret = -ENOENT;
         goto out;
@@ -434,11 +436,10 @@ static ssize_t kvblade_readd(u32 major, u32 minor, char *ifname, char *path) {
     d->blkdev = bd;
     bd = NULL;
     
-    // We are finished (fall through to the exit code)
-    
-out:
+    // We are finished (fall through and exit)
     rcu_read_unlock();
     spin_unlock(&root.lock);
+out:
     if (bd != NULL) {
         blkdev_put(bd, FMODE_READ | FMODE_WRITE);
         bd = NULL;
