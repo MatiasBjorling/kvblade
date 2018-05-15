@@ -414,9 +414,9 @@ static ssize_t kvblade_readd(u32 major, u32 minor, char *ifname, char *path) {
     d = NULL;
     rcu_read_lock();
     hlist_for_each_entry_rcu_notrace(td, &root.devlist, node) {
-        if (d->major == major &&
-                d->minor == minor &&
-                strcmp(d->netdev->name, ifname) == 0)
+        if (td->major == major &&
+                td->minor == minor &&
+                strcmp(td->netdev->name, ifname) == 0)
         {
             d = td;
             break;
@@ -566,10 +566,11 @@ static ssize_t store_readd(struct aoedev *dev, const char *page, size_t len) {
     if (kvblade_sysfs_args(p, argv, nelem(argv)) != 4) {
         printk(KERN_ERR "kvblade: bad arg count for readd\n");
         error = -EINVAL;
-    } else
+    } else {
         error = kvblade_readd(simple_strtoul(argv[0], NULL, 0),
             simple_strtoul(argv[1], NULL, 0),
             argv[2], argv[3]);
+    }
 
     kfree(p);
     return error ? error : len;
