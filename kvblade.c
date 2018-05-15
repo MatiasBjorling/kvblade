@@ -401,7 +401,7 @@ static ssize_t kvblade_readd(u32 major, u32 minor, char *ifname, char *path) {
     struct block_device *bd = NULL; 
     int ret = 0;
     
-    printk("kvblade: kvblade_readd\n");
+    //printk("kvblade: kvblade_readd\n");
     
     bd = blkdev_get_by_path(path, FMODE_READ | FMODE_WRITE, NULL);
     if (!bd || IS_ERR(bd)) {
@@ -426,7 +426,9 @@ static ssize_t kvblade_readd(u32 major, u32 minor, char *ifname, char *path) {
     if (d == NULL) {
         rcu_read_unlock();
         spin_unlock(&root.lock);
-        printk(KERN_ERR "kvblade: readd failed: device %d.%d@%s does not exist\n", major, minor, ifname);
+        
+        //printk(KERN_ERR "kvblade: readd failed: device %d.%d@%s does not exist\n", major, minor, ifname);
+        
         ret = -ENOENT;
         goto out;
     }
