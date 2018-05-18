@@ -789,21 +789,16 @@ static void ktcom(struct aoethread* t, struct sk_buff *skb) {
     struct aoe_atahdr *ata;
     struct bio *bio;
     int len;
-    int error;
-    unsigned int bytes = 0;
+    unsigned int bytes;
     
     prq = (struct aoereq **)(&skb->cb[0]);
     rq = *prq;
     bio = &rq->bio;
-    error = rq->err;
     
     d = rq->d;
     
     aoe = (struct aoe_hdr *) skb_mac_header(skb);
     ata = (struct aoe_atahdr *) aoe->data;
-    
-    if (!error)
-        bytes = ata->scnt << 9;
 
     len = sizeof *aoe + sizeof *ata;
     
@@ -814,6 +809,8 @@ static void ktcom(struct aoethread* t, struct sk_buff *skb) {
 #else
     if (!bio->bi_status) {
 #endif
+        bytes = ata->scnt << 9;
+        
         if (bio_data_dir(bio) == READ)
             len += bytes;
         ata->scnt = 0;
@@ -822,11 +819,11 @@ static void ktcom(struct aoethread* t, struct sk_buff *skb) {
         // should increment lba here, too
     } else {
 #if LINUX_VERSION_CODE <= KERNEL_VERSION(4,2,8)
-        printk(KERN_ERR "kvblade: I/O error %d on %s\n", error, d->kobj.name);
+        printk(KERN_ERR "kvblade: I/O error %d on %s\n", rq->err, d->kobj.name);
 #elif LINUX_VERSION_CODE <= KERNEL_VERSION(4,13,0)
         printk(KERN_ERR "kvblade: I/O error %d on %s\n", bio->bi_error, d->kobj.name);
 #else
-        printk(KERN_ERR "kvblade: I/O error %d on %s\n", blk_status_to_errno(bio->bi_status), d->kobj.name);
+        printk(KERN_ERR "kvblade: I/O error %d on %s (status=%d)\n", blk_status_to_errno(bio->bi_status), d->kobj.name, bio->bi_status);
 #endif
         ata->cmdstat = ATA_ERR | ATA_DF;
         ata->errfeat = ATA_UNC | ATA_ABORTED;
