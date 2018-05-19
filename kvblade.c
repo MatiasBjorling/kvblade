@@ -793,13 +793,11 @@ static void ktcom(struct aoethread* t, struct sk_buff *skb) {
     
     prq = (struct aoereq **)(&skb->cb[0]);
     rq = *prq;
-    bio = &rq->bio;
-    
+    bio = &rq->bio;    
     d = rq->d;
     
     aoe = (struct aoe_hdr *) skb_mac_header(skb);
     ata = (struct aoe_atahdr *) aoe->data;
-
     len = sizeof *aoe + sizeof *ata;
     
 #if LINUX_VERSION_CODE <= KERNEL_VERSION(4,2,8)
@@ -809,10 +807,10 @@ static void ktcom(struct aoethread* t, struct sk_buff *skb) {
 #else
     if (!bio->bi_status) {
 #endif
-        bytes = ata->scnt << 9;
-        
+        bytes = ata->scnt << 9;        
         if (bio_data_dir(bio) == READ)
             len += bytes;
+        
         ata->scnt = 0;
         ata->cmdstat = ATA_DRDY;
         ata->errfeat = 0;
@@ -833,8 +831,7 @@ static void ktcom(struct aoethread* t, struct sk_buff *skb) {
     atomic_dec(&dt->busy);
     
     skb_setlen(skb, len);    
-    if (unlikely(!pskb_may_pull(skb, ETH_HLEN)))
-    {
+    if (unlikely(!pskb_may_pull(skb, ETH_HLEN))) {
         dev_kfree_skb(skb);
         return;
     }
