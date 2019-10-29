@@ -126,8 +126,6 @@ struct aoethread {
     struct completion   ktrendez;
     struct task_struct* task;
     
-    int                 cpu;
-    
 } ____cacheline_aligned_in_smp typedef aoethread_t;
 
 struct core
@@ -274,12 +272,8 @@ static void announce(struct aoedev *d, struct aoethread* t) {
         memcpy(cfg->data, d->config, d->nconfig);
     }
     
-    if (in_interrupt()) {
-        skb_queue_tail(&t->skb_outq, skb);
-        wake(t);
-    } else {
-        dev_queue_xmit(skb);
-    }
+    skb_queue_tail(&t->skb_outq, skb);
+    wake(t);
 }
 
 static ssize_t kvblade_add(u32 major, u32 minor, char *ifname, char *path) {
@@ -340,7 +334,7 @@ static ssize_t kvblade_add(u32 major, u32 minor, char *ifname, char *path) {
         }
     }
     rcu_read_unlock();
-
+    
     d = kmalloc(sizeof (struct aoedev), GFP_KERNEL);
     if (!d) {
         spin_unlock(&root.lock);
@@ -401,8 +395,6 @@ static ssize_t kvblade_readd(u32 major, u32 minor, char *ifname, char *path) {
     struct block_device *bd = NULL; 
     int ret = 0;
     
-    //printk("kvblade: kvblade_readd\n");
-    
     bd = blkdev_get_by_path(path, FMODE_READ | FMODE_WRITE, NULL);
     if (!bd || IS_ERR(bd)) {
         printk(KERN_ERR "kvblade: readd failed: can't open block device %s: %ld\n", path, PTR_ERR(bd));
@@ -426,8 +418,6 @@ static ssize_t kvblade_readd(u32 major, u32 minor, char *ifname, char *path) {
     if (d == NULL) {
         rcu_read_unlock();
         spin_unlock(&root.lock);
-        
-        //printk(KERN_ERR "kvblade: readd failed: device %d.%d@%s does not exist\n", major, minor, ifname);
         
         ret = -ENOENT;
         goto out;
@@ -800,13 +790,7 @@ static void ktcom(struct aoethread* t, struct sk_buff *skb) {
     ata = (struct aoe_atahdr *) aoe->data;
     len = sizeof *aoe + sizeof *ata;
     
-#if LINUX_VERSION_CODE <= KERNEL_VERSION(4,2,8)
-    if (bio_flagged(bio, BIO_UPTODATE)) {
-#elif LINUX_VERSION_CODE <= KERNEL_VERSION(4,13,0)
-    if (!bio->bi_error) {
-#else
     if (!bio->bi_status) {
-#endif
         bytes = ata->scnt << 9;        
         if (bio_data_dir(bio) == READ)
             len += bytes;
@@ -816,19 +800,14 @@ static void ktcom(struct aoethread* t, struct sk_buff *skb) {
         ata->errfeat = 0;
         // should increment lba here, too
     } else {
-#if LINUX_VERSION_CODE <= KERNEL_VERSION(4,2,8)
-        printk(KERN_ERR "kvblade: I/O error %d on %s\n", rq->err, d->kobj.name);
-#elif LINUX_VERSION_CODE <= KERNEL_VERSION(4,13,0)
-        printk(KERN_ERR "kvblade: I/O error %d on %s\n", bio->bi_error, d->kobj.name);
-#else
         printk(KERN_ERR "kvblade: I/O error %d on %s (status=%d)\n", blk_status_to_errno(bio->bi_status), d->kobj.name, bio->bi_status);
-#endif
         ata->cmdstat = ATA_ERR | ATA_DF;
         ata->errfeat = ATA_UNC | ATA_ABORTED;
     }
 
-    dt = (struct aoedev_thread*)per_cpu_ptr(d->devthread_percpu, t->cpu);
+    dt = (struct aoedev_thread*)per_cpu_ptr(d->devthread_percpu, get_cpu());
     atomic_dec(&dt->busy);
+    put_cpu();
     
     skb_setlen(skb, len);    
     if (unlikely(!pskb_may_pull(skb, ETH_HLEN))) {
@@ -841,15 +820,9 @@ static void ktcom(struct aoethread* t, struct sk_buff *skb) {
     kmem_cache_free(root.aoe_rq_cache, rq);
 }
 
-#if LINUX_VERSION_CODE <= KERNEL_VERSION(4,2,8)
-static void ata_io_complete(struct bio *bio, int error) {    
-#elif LINUX_VERSION_CODE <= KERNEL_VERSION(4,13,0)
-static void ata_io_complete(struct bio *bio) {
-    int    error = bio->bi_error;
-#else
 static void ata_io_complete(struct bio *bio) {
     int    error = blk_status_to_errno(bio->bi_status);
-#endif
+
     struct aoethread *t;
     struct aoedev* d;
     struct aoedev_thread* dt;
@@ -898,13 +871,7 @@ static struct bio* rq_init_bio(struct aoereq *rq)
 {
     struct bio *bio;
     bio = &rq->bio;
-#if LINUX_VERSION_CODE <= KERNEL_VERSION(4,10,0)
-    bio_init(bio);
-    bio->bi_max_vecs = MAXIOVECS;
-    bio->bi_io_vec = bio->bi_inline_vecs;
-#else
     bio_init(bio, bio->bi_inline_vecs, MAXIOVECS);
-#endif
     return bio;
 }
 
@@ -1015,11 +982,7 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
         rq->skb = skb;
 
         bio_sector(bio) = lba;
-#if LINUX_VERSION_CODE <= KERNEL_VERSION(4,14,0)
-        bio->bi_bdev = d->blkdev;
-#else
         bio_set_dev(bio, d->blkdev);
-#endif
         bio->bi_end_io = ata_io_complete;
         bio->bi_private = rq;
 
@@ -1029,18 +992,15 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
             goto drop;
         }
 
-        dt = (struct aoedev_thread*)per_cpu_ptr(d->devthread_percpu, t->cpu);
+        dt = (struct aoedev_thread*)per_cpu_ptr(d->devthread_percpu, get_cpu());
         atomic_inc(&dt->busy);
+        put_cpu();
 
-#if LINUX_VERSION_CODE <= KERNEL_VERSION(4,2,8)
-        submit_bio(rw, bio);
-#else
         if (rw == WRITE)
             bio_set_op_attrs(bio, REQ_OP_WRITE, 0);
         else
             bio_set_op_attrs(bio, REQ_OP_READ, 0);
         submit_bio(bio);
-#endif
         return NULL;
 
     default:
@@ -1050,6 +1010,7 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
         break;
     case ATA_CMD_ID_ATA:
         len += ata_identify(d, ata);
+        break;
     case ATA_CMD_FLUSH:
         ata->cmdstat = ATA_DRDY;
         ata->errfeat = 0;
@@ -1173,7 +1134,7 @@ static struct sk_buff* clone_response(struct aoethread* t, struct sk_buff *skb, 
     return rskb;
 }
 
-static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
+static void ktrcv(struct aoethread* t, struct sk_buff *skb, int cpu) {
     struct sk_buff *rskb = NULL;
     struct aoedev *d;
     struct aoedev_thread *dt;
@@ -1194,7 +1155,7 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb) {
                     (skb->dev != d->netdev))
                 continue;
 
-            dt = (struct aoedev_thread*)per_cpu_ptr(d->devthread_percpu, t->cpu);
+            dt = (struct aoedev_thread*)per_cpu_ptr(d->devthread_percpu, cpu);
             
             switch (aoe->cmd) {
                 case AOECMD_ATA:
@@ -1275,23 +1236,19 @@ static int rcv(struct sk_buff *skb, struct net_device *ndev, struct packet_type 
     }
     
     t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, get_cpu());
-    if (in_interrupt()) {
-        skb_queue_tail(&t->skb_inq, skb);
-        wake(t);
-    } else {
-        ktrcv(t, skb);
-    }
+    skb_queue_tail(&t->skb_inq, skb);
+    wake(t);
     put_cpu();
     return 0;
 }
 
-static int kthread_work(struct aoethread* t) {
+static int kthread_work(struct aoethread* t, int cpu) {
     int ret = 0;
     struct sk_buff *iskb, *oskb, *cskb;
     
     do {
         if ((iskb = skb_dequeue(&t->skb_inq))) {
-            ktrcv(t, iskb);
+            ktrcv(t, iskb, cpu);
             ret = 1;
         }
         if ((cskb = skb_dequeue(&t->skb_com))) {
@@ -1350,13 +1307,17 @@ static int kthread(void* data) {
             
             // Now check for more work
             // (if none is found then we'll go into sleep mode)
-            work = kthread_work(t);
+            int cpu = get_cpu();
+            work = kthread_work(t, cpu);
+            put_cpu();
         }
         
         // We have to process work after setting INTERRUPTIBLE or we risk missing a
         // wake up in between
         set_current_state(TASK_INTERRUPTIBLE);
-        work = kthread_work(t);
+        int cpu = get_cpu();
+        work = kthread_work(t, cpu);
+        put_cpu();
         
         // If work was not found then we are good to go into a sleep operation
         // (which may be really short if the task is woker again via wake_up_process)
@@ -1412,7 +1373,6 @@ static int __init kvblade_module_init(void) {
         if (t->task == NULL || IS_ERR(t->task))
             return -EAGAIN;
         
-        t->cpu = n;
         kthread_bind(t->task, n);        
         wake_up_process(t->task);    
         wait_for_completion(&t->ktrendez);
