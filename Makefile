@@ -12,7 +12,7 @@ SBINDIR		:= ${PREFIX}/usr/sbin
 MANDIR		:= ${PREFIX}/usr/share/man
 CMDS		:= kvstat kvadd kvdel
 
-KVER		:= 4.14.51-tok
+KVER		:= 4.19.79-tok
 KDIR		:= ../kernel.d/headers.d/build
 
 default: prep
