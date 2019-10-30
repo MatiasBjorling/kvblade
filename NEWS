@@ -1,4 +1,7 @@
 -*- change-log -*-
+2019-10-30 John Sharratt <johnathan.sharratt@gmail.com>
+        Preparing the kernel module for a pull request
+
 2006-10-02 Sam Hopkins <sah@coraid.com>
 	Fix Makefile uninstall target
 	Cast field precision arguments to int

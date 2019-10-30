@@ -1,5 +1,11 @@
+kvblade: a 4.14 to 4.19+ linux kernel module
 
-kvblade: a 2.6 linux kernel module
+* Standardized on the original Linux Kernel aoe.h header file
+* Removed all backwards compatibility with older kernels
+* Removed code areas that were shown to have problems in the past
+---
+
+kvblade: a 4.2 to 4.8+ linux kernel module
 ---
 
 Kvblade is a kernel module implementing the target
@@ -30,12 +36,52 @@ things that you can help with.
 Author:
 	Sam Hopkins
 	Coraid, Inc.
+	
+	John Sharratt
+	Tokera Ltd.
 
 Address support requests to
-aoetools-discuss@lists.sourceforge.net.
+	aoetools-discuss@lists.sourceforge.net.
+	support@tokera.com
 
 Thanks to Lelik P. Korchagin for writing the first
 kernel vblade module.  It was quite helpful as a
 reference implementation.
 
+Thanks to Sam. Hopkins for providing the original version
+those many years ago.
 
+---
+
+Forked for the Tokera initiative
+
+Improvements:
+* Added support for linux kernel version 4.14.9 (long term kernel)
+* Fixed a compile issue caused by the changed field bi_sector in BIO objects
+* Removed the 16 static buffers and replaced them with 512 slab objects that are NUMA aligned
+* Imported the AOE headers from the latest linux kernel version (4.2.9 - 4.8)
+* Fixed incorrect reporting of capacity when attaching to a partition device
+* Converted the single threaded worker to use a highly optimized multithreading architecture (pinned thread per core)
+* Removed the worker spinlock and replaced with RCU symantics
+* Removed a zero memory operation on new packets (which was wasted CPU time)
+* Added a new system operation to broadcast AOE announce packets for all hosted devices (echo > /sys/kvblade/announce)
+* Impremented per_cpu optimizations to reduce cache line thrashing
+* Removed a cache line hot spot on aoedev.busy which was using atomic operations
+
+Testing:
+* Tested on kernel 4.8.17
+* Number of physical server: 3
+* Number of physical CPUs: 2
+* Cores per CPU: 12
+* RAM: 96GB
+* Networking: 10GBit/s
+* Disks: SSD (1GB) and HDD (4GB)
+* Blocksize: 4096 bytes
+* MTU: 8192 bytes
+
+Results
+* Command: dd if=/dev/zero of=/dev/etherd/e1.0 bs=1MB count=1000 oflag=direct
+* Previous bandwidth: 80Mbit/s
+* Current bandwidth: 4792Mbit/s
+* Previous IOPS: 10k IOPS
+* Current IOPS: 153k IOPS
