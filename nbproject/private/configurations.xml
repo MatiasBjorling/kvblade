@@ -1,12 +1,17 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<configurationDescriptor version="97">
+<configurationDescriptor version="100">
   <logicalFolder name="root" displayName="root" projectFiles="true" kind="ROOT">
     <df root="." name="0">
+      <df name=".tmp_versions">
+        <in>kvblade.mod</in>
+      </df>
       <df name="conf">
       </df>
       <in>aoe.h</in>
+      <in>aoe_target.h</in>
       <in>if_aoe.h</in>
       <in>kvblade.c</in>
+      <in>kvblade.mod.c</in>
     </df>
   </logicalFolder>
   <projectmakefile>Makefile</projectmakefile>

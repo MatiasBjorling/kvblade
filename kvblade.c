@@ -1,26 +1,14 @@
 /* Copyright (C) 2006 Coraid, Inc.  See COPYING for GPL terms. */
+/* Copyright (C) 2019 John Sharratt.  See COPYING for GPL terms. */
 
-#include <linux/version.h>
-#include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/moduleparam.h>
-#include <linux/workqueue.h>
-#include <linux/signal.h>
-#include <linux/sched/signal.h>
 #include <linux/blkdev.h>
 #include <linux/netdevice.h>
-#include <linux/fs.h>
-#include <linux/namei.h>
-#include <linux/delay.h>
 #include <linux/kthread.h>
 #include <linux/ata.h>
 #include <linux/ctype.h>
 #include <uapi/linux/hdreg.h>
-#include <linux/init.h>
-#include <linux/bio.h>
-#include <linux/device-mapper.h>
 
-//#include "if_aoe.h"
 #include "aoe.h"
 
 //#define AOE_DEBUG
@@ -46,7 +34,7 @@
 #define MAXSECTORS(mtu) (((mtu) - sizeof (struct aoe_hdr) - sizeof (struct aoe_atahdr)) / 512)
 #define MAXBUFFERS  1024
 #define MAXIOVECS 16
-#define MAX_AOE_HEADER sizeof(struct aoe_hdr) + sizeof(struct aoe_cfghdr)
+#define HEADERSIZE sizeof(struct aoe_hdr) + sizeof(struct aoe_cfghdr)
 
 #define bio_sector(bio) ((bio)->bi_iter.bi_sector)
 #define bio_size(bio) ((bio)->bi_iter.bi_size)
@@ -61,11 +49,20 @@ enum {
     ATA_LBA28MAX = 0x0fffffff,
 };
 
-struct aoedev;
+enum
+{
+    AOEERR_CMD= 1,
+    AOEERR_ARG,
+    AOEERR_DEV,
+    AOEERR_CFG,
+    AOEERR_VER,
+};
+
+struct aoetarget;
 
 struct aoereq {
     struct sk_buff *skb;    // Reference to the packet that initiated the request
-    struct aoedev *d;       // Reference to the device that the request will be actioned on
+    struct aoetarget *d;       // Reference to the device that the request will be actioned on
     struct aoethread* t;    // Reference to the thread thats processing this command
     int err;
     
@@ -74,11 +71,11 @@ struct aoereq {
     
 } ____cacheline_aligned_in_smp typedef aoereq_t;
 
-struct aoedev_thread {
+struct aoetarget_thread {
     atomic_t                busy;    
-} ____cacheline_aligned_in_smp typedef aoedev_thread_t;
+} ____cacheline_aligned_in_smp typedef aoetarget_thread_t;
 
-struct aoedev {
+struct aoetarget {
     
     // This next 64 bytes are aligned and packed together so that
     // the driver keeps a single cache line hot per device
@@ -89,7 +86,7 @@ struct aoedev {
     struct net_device*      netdev;
     struct block_device*    blkdev;
     
-    struct aoedev_thread*   devthread_percpu;
+    struct aoetarget_thread*   devthread_percpu;
     
     struct kobject          kobj;
     
@@ -106,12 +103,12 @@ struct aoedev {
     
     struct rcu_head         rcu; // List head used to delay the release of this object till after RCU sync
     
-} ____cacheline_aligned_in_smp typedef aoedev_t;
+} ____cacheline_aligned_in_smp typedef aoetarget_t;
 
 struct kvblade_sysfs_entry {
     struct attribute attr;
-    ssize_t(*show)(struct aoedev *, char *);
-    ssize_t(*store)(struct aoedev *, const char *, size_t);
+    ssize_t(*show)(struct aoetarget *, char *);
+    ssize_t(*store)(struct aoetarget *, const char *, size_t);
 };
 
 struct aoethread {
@@ -182,7 +179,7 @@ static struct sk_buff * skb_new(struct aoethread* t, struct net_device *dev, ulo
     if (!skb)
         skb = __alloc_skb(len, GFP_ATOMIC & ~__GFP_DMA, 0, NUMA_NO_NODE);
     if (skb) {
-        skb_reserve(skb, MAX_AOE_HEADER);
+        skb_reserve(skb, HEADERSIZE);
         skb_reset_network_header(skb);
         skb_reset_mac_header(skb);
         skb->dev = dev;
@@ -207,13 +204,13 @@ static char* spncpy(char *d, const char *s, int n) {
     return r;
 }
 
-static int count_busy(struct aoedev *d) {
+static int count_busy(struct aoetarget *d) {
     int n;
-    struct aoedev_thread* dt;
+    struct aoetarget_thread* dt;
     
     int ret =0;
     for (n = 0; n < num_online_cpus(); n++) {
-        dt = (struct aoedev_thread*)per_cpu_ptr(d->devthread_percpu, n);
+        dt = (struct aoetarget_thread*)per_cpu_ptr(d->devthread_percpu, n);
         ret += atomic_read(&dt->busy);
     }
     return ret;
@@ -224,7 +221,7 @@ static void wake(struct aoethread* t)
     wake_up_process(t->task);
 }
 
-static int ata_maxsectors(struct aoedev *d) {
+static int ata_maxsectors(struct aoetarget *d) {
     int ret = MAXSECTORS(d->netdev->mtu);
     if (ret > 64)
         ret = 64;
@@ -237,18 +234,18 @@ static int ata_maxsectors(struct aoedev *d) {
     return ret;
 }
 
-static void announce(struct aoedev *d, struct aoethread* t) {
+static void announce(struct aoetarget *d, struct aoethread* t) {
     struct sk_buff* skb;
     struct aoe_hdr *aoe;
     struct aoe_cfghdr *cfg;
-    int len = MAX_AOE_HEADER + d->nconfig;
+    int len = HEADERSIZE + d->nconfig;
     
     skb = skb_new(t, d->netdev, len);
     if (skb == NULL)
         return;
     
     aoe = (struct aoe_hdr *) skb_mac_header(skb);
-    cfg = (struct aoe_cfghdr *) aoe->data;
+    cfg = (struct aoe_cfghdr *)(aoe+1);
 
     memset(aoe, 0, sizeof *aoe);
     memcpy(aoe->src, d->netdev->dev_addr, ETH_ALEN);
@@ -267,8 +264,8 @@ static void announce(struct aoedev *d, struct aoethread* t) {
     cfg->aoeccmd = AOE_HVER;
 
     if (d->nconfig) {
-        cfg->cslen = cpu_to_be16(d->nconfig);
-        memcpy(cfg->data, d->config, d->nconfig);
+        *((__be16*)&cfg->cslen[0]) = cpu_to_be16(d->nconfig);
+        memcpy((cfg+1), d->config, d->nconfig);
     }
     
     skb_queue_tail(&t->skb_outq, skb);
@@ -279,11 +276,11 @@ static ssize_t kvblade_add(u32 major, u32 minor, char *ifname, char *path) {
     struct net_device *nd;
     struct net* ns;
     struct block_device *bd;
-    struct aoedev *d, *td;
+    struct aoetarget *d, *td;
     int ret = 0;
     struct aoethread* t;
     int n;
-    struct aoedev_thread* dt;
+    struct aoetarget_thread* dt;
     
     printk("kvblade: kvblade_add\n");
     nd = dev_get_by_name(&init_net, ifname);
@@ -332,7 +329,7 @@ static ssize_t kvblade_add(u32 major, u32 minor, char *ifname, char *path) {
     }
     rcu_read_unlock();
     
-    d = kmalloc(sizeof (struct aoedev), GFP_KERNEL);
+    d = kmalloc(sizeof (struct aoetarget), GFP_KERNEL);
     if (!d) {
         spin_unlock(&root.lock);
         
@@ -341,7 +338,7 @@ static ssize_t kvblade_add(u32 major, u32 minor, char *ifname, char *path) {
         goto err;
     }
 
-    memset(d, 0, sizeof (struct aoedev));
+    memset(d, 0, sizeof (struct aoetarget));
     INIT_HLIST_NODE(&d->node);
     d->blkdev = bd;
     d->netdev = nd;
@@ -352,7 +349,7 @@ static ssize_t kvblade_add(u32 major, u32 minor, char *ifname, char *path) {
     spncpy(d->model, "EtherDrive(R) kvblade", nelem(d->model));
     spncpy(d->sn, "SN HERE", nelem(d->sn));
     
-    d->devthread_percpu = (struct aoedev_thread*)alloc_percpu(struct aoedev_thread);
+    d->devthread_percpu = (struct aoetarget_thread*)alloc_percpu(struct aoetarget_thread);
     if (!d->devthread_percpu) {
         spin_unlock(&root.lock);
         kfree(d);
@@ -363,8 +360,8 @@ static ssize_t kvblade_add(u32 major, u32 minor, char *ifname, char *path) {
     }
     
     for (n = 0; n < num_online_cpus(); n++) {
-        dt = (struct aoedev_thread*)per_cpu_ptr(d->devthread_percpu, n);
-        memset(dt, 0, sizeof(struct aoedev_thread));
+        dt = (struct aoetarget_thread*)per_cpu_ptr(d->devthread_percpu, n);
+        memset(dt, 0, sizeof(struct aoetarget_thread));
     }
 
     ret = kobject_init_and_add(&d->kobj, &kvblade_ktype, &root.kvblade_kobj, "%d.%d@%s", major, minor, ifname);
@@ -394,7 +391,7 @@ err:
 }
 
 static ssize_t kvblade_readd(u32 major, u32 minor, char *ifname, char *path) {
-    struct aoedev *d, *td;
+    struct aoetarget *d, *td;
     struct block_device *obd = NULL; 
     struct block_device *bd = NULL; 
     int ret = 0;
@@ -448,7 +445,7 @@ out:
 }
 
 void kvblade_del_rcu(struct rcu_head* head) {
-    struct aoedev *d = container_of(head, aoedev_t, rcu);
+    struct aoetarget *d = container_of(head, aoetarget_t, rcu);
     
     blkdev_put(d->blkdev, FMODE_READ | FMODE_WRITE);
 
@@ -462,7 +459,7 @@ void kvblade_del_rcu(struct rcu_head* head) {
 }
 
 static ssize_t kvblade_del(u32 major, u32 minor, char *ifname) {
-    struct aoedev *d;
+    struct aoetarget *d;
     int ret;
 
     spin_lock(&root.lock);
@@ -502,7 +499,7 @@ err:
     return ret;
 }
 
-static ssize_t store_add(struct aoedev *dev, const char *page, size_t len) {
+static ssize_t store_add(struct aoetarget *dev, const char *page, size_t len) {
     int error = 0;
     char *argv[16];
     char *p;
@@ -526,7 +523,7 @@ static ssize_t store_add(struct aoedev *dev, const char *page, size_t len) {
 
 static struct kvblade_sysfs_entry kvblade_sysfs_add = __ATTR(add, 0644, NULL, store_add);
 
-static ssize_t store_del(struct aoedev *dev, const char *page, size_t len) {
+static ssize_t store_del(struct aoetarget *dev, const char *page, size_t len) {
     int error = 0;
     char *argv[16];
     char *p;
@@ -550,7 +547,7 @@ static ssize_t store_del(struct aoedev *dev, const char *page, size_t len) {
 
 static struct kvblade_sysfs_entry kvblade_sysfs_del = __ATTR(del, 0644, NULL, store_del);
 
-static ssize_t store_readd(struct aoedev *dev, const char *page, size_t len) {
+static ssize_t store_readd(struct aoetarget *dev, const char *page, size_t len) {
     int error = 0;
     char *argv[16];
     char *p;
@@ -574,7 +571,7 @@ static ssize_t store_readd(struct aoedev *dev, const char *page, size_t len) {
 
 static struct kvblade_sysfs_entry kvblade_sysfs_readd = __ATTR(readd, 0644, NULL, store_readd);
 
-static ssize_t store_announce(struct aoedev *dev, const char *page, size_t len) {
+static ssize_t store_announce(struct aoetarget *dev, const char *page, size_t len) {
     int error = 0;
     struct aoethread* t;
 
@@ -588,53 +585,53 @@ static ssize_t store_announce(struct aoedev *dev, const char *page, size_t len) 
 
 static struct kvblade_sysfs_entry kvblade_sysfs_announce = __ATTR(announce, 0644, NULL, store_announce);
 
-static ssize_t show_scnt(struct aoedev *dev, char *page) {
+static ssize_t show_scnt(struct aoetarget *dev, char *page) {
     return sprintf(page, "%Ld\n", dev->scnt);
 }
 
 static struct kvblade_sysfs_entry kvblade_sysfs_scnt = __ATTR(scst, 0644, show_scnt, NULL);
 
-static ssize_t show_busy(struct aoedev *dev, char *page) {
+static ssize_t show_busy(struct aoetarget *dev, char *page) {
     return sprintf(page, "%d\n", count_busy(dev));
 }
 
 static struct kvblade_sysfs_entry kvblade_sysfs_busy = __ATTR(busy, 0644, show_busy, NULL);
 
-static ssize_t show_bdev(struct aoedev *dev, char *page) {
+static ssize_t show_bdev(struct aoetarget *dev, char *page) {
     return print_dev_t(page, dev->blkdev->bd_dev);
 }
 
 static struct kvblade_sysfs_entry kvblade_sysfs_bdev = __ATTR(bdev, 0644, show_bdev, NULL);
 
-static ssize_t show_bpath(struct aoedev *dev, char *page) {
+static ssize_t show_bpath(struct aoetarget *dev, char *page) {
     return sprintf(page, "%.*s\n", (int) nelem(dev->path), dev->path);
 }
 
 static struct kvblade_sysfs_entry kvblade_sysfs_bpath = __ATTR(bpath, 0644, show_bpath, NULL);
 
-static ssize_t show_model(struct aoedev *dev, char *page) {
+static ssize_t show_model(struct aoetarget *dev, char *page) {
     return sprintf(page, "%.*s\n", (int) nelem(dev->model), dev->model);
 }
 
-static ssize_t store_model(struct aoedev *dev, const char *page, size_t len) {
+static ssize_t store_model(struct aoetarget *dev, const char *page, size_t len) {
     spncpy(dev->model, page, nelem(dev->model));
     return 0;
 }
 
 static struct kvblade_sysfs_entry kvblade_sysfs_model = __ATTR(model, 0644, show_model, store_model);
 
-static ssize_t show_sn(struct aoedev *dev, char *page) {
+static ssize_t show_sn(struct aoetarget *dev, char *page) {
     return sprintf(page, "%.*s\n", (int) nelem(dev->sn), dev->sn);
 }
 
-static ssize_t store_sn(struct aoedev *dev, const char *page, size_t len) {
+static ssize_t store_sn(struct aoetarget *dev, const char *page, size_t len) {
     spncpy(dev->sn, page, nelem(dev->sn));
     return 0;
 }
 
 static struct kvblade_sysfs_entry kvblade_sysfs_sn = __ATTR(sn, 0644, show_sn, store_sn);
 
-static ssize_t show_mtu(struct aoedev *dev, char *page) {
+static ssize_t show_mtu(struct aoetarget *dev, char *page) {
     return sprintf(page, "%d\n", (int)(ata_maxsectors(dev) * KERNEL_SECTOR_SIZE));
 }
 
@@ -661,10 +658,10 @@ static struct attribute *kvblade_ktype_ops_attrs[] = {
 
 static ssize_t kvblade_attr_show(struct kobject *kobj, struct attribute *attr, char *page) {
     struct kvblade_sysfs_entry *entry;
-    struct aoedev *dev;
+    struct aoetarget *dev;
 
     entry = container_of(attr, struct kvblade_sysfs_entry, attr);
-    dev = container_of(kobj, struct aoedev, kobj);
+    dev = container_of(kobj, struct aoetarget, kobj);
 
     if (!entry->show) {
         return -EIO;
@@ -683,7 +680,7 @@ static ssize_t kvblade_attr_store(struct kobject *kobj, struct attribute *attr,
     if (kobj == &root.kvblade_kobj) {
         ret = entry->store(NULL, page, length);
     } else {
-        struct aoedev *dev = container_of(kobj, struct aoedev, kobj);
+        struct aoetarget *dev = container_of(kobj, struct aoetarget, kobj);
 
         if (!entry->store)
             return -EIO;
@@ -720,9 +717,9 @@ static void setfld(u16 *a, int idx, int len, char *str) {
     }
 }
 
-static int ata_identify(struct aoedev *d, struct aoe_atahdr *ata) {
+static int ata_identify(struct aoetarget *d, struct aoe_atahdr *ata) {
     char buf[64];
-    u16 *words = (u16 *) ata->data;
+    u16 *words = (u16 *)(ata+1);
     u8 *cp;
     loff_t scnt;
 
@@ -778,8 +775,8 @@ static void skb_setlen(struct sk_buff* skb, int len)
 
 static void ktcom(struct aoethread* t, struct sk_buff *skb) {
     struct aoereq *rq, **prq;
-    struct aoedev *d;
-    struct aoedev_thread *dt;
+    struct aoetarget *d;
+    struct aoetarget_thread *dt;
     struct aoe_hdr *aoe;
     struct aoe_atahdr *ata;
     struct bio *bio;
@@ -792,7 +789,7 @@ static void ktcom(struct aoethread* t, struct sk_buff *skb) {
     d = rq->d;
     
     aoe = (struct aoe_hdr *) skb_mac_header(skb);
-    ata = (struct aoe_atahdr *) aoe->data;
+    ata = (struct aoe_atahdr *)(aoe+1);
     len = sizeof *aoe + sizeof *ata;
     
     if (!bio->bi_status) {
@@ -810,7 +807,7 @@ static void ktcom(struct aoethread* t, struct sk_buff *skb) {
         ata->errfeat = ATA_UNC | ATA_ABORTED;
     }
 
-    dt = (struct aoedev_thread*)per_cpu_ptr(d->devthread_percpu, get_cpu());
+    dt = (struct aoetarget_thread*)per_cpu_ptr(d->devthread_percpu, get_cpu());
     atomic_dec(&dt->busy);
     put_cpu();
     
@@ -829,7 +826,7 @@ static void ata_io_complete(struct bio *bio) {
     int    error = blk_status_to_errno(bio->bi_status);
 
     struct aoethread *t;
-    struct aoedev* d;
+    struct aoetarget* d;
     struct aoereq *rq, **prq;
     struct sk_buff *skb;
     int cpu;
@@ -899,19 +896,19 @@ static int skb_add_pages(struct sk_buff* skb, struct bio *bio, int len) {
     return len;
 }
 
-static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk_buff *skb) {
+static struct sk_buff * rcv_ata(struct aoetarget *d, struct aoethread *t, struct sk_buff *skb) {
     struct aoe_hdr *aoe;
     struct aoe_atahdr *ata;
     struct aoereq *rq;
-    struct aoedev_thread *dt;
+    struct aoetarget_thread *dt;
     struct bio *bio;
     sector_t lba;
     int len, rw;
     unsigned int data_len;
     
     aoe = (struct aoe_hdr *) skb_mac_header(skb);
-    ata = (struct aoe_atahdr *) aoe->data;
-    lba = readlba(ata->lba);
+    ata = (struct aoe_atahdr *)(aoe+1);
+    lba = readlba(&ata->lba0);
     len = sizeof *aoe + sizeof *ata;
     data_len = ata->scnt << 9;
     
@@ -984,7 +981,7 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
             goto drop;
         }
 
-        dt = (struct aoedev_thread*)per_cpu_ptr(d->devthread_percpu, get_cpu());
+        dt = (struct aoetarget_thread*)per_cpu_ptr(d->devthread_percpu, get_cpu());
         atomic_inc(&dt->busy);
         put_cpu();
 
@@ -1016,14 +1013,14 @@ drop:
     return NULL;
 }
 
-static struct sk_buff* rcv_cfg(struct aoedev *d, struct aoethread *t, struct sk_buff *skb) {
+static struct sk_buff* rcv_cfg(struct aoetarget *d, struct aoethread *t, struct sk_buff *skb) {
     struct aoe_hdr *aoe;
     struct aoe_cfghdr *cfg;
     int len, cslen, ccmd;
     
     aoe = (struct aoe_hdr *) skb_mac_header(skb);
-    cfg = (struct aoe_cfghdr *) aoe->data;
-    cslen = ntohs(cfg->cslen);
+    cfg = (struct aoe_cfghdr *)(aoe+1);
+    cslen = ntohs(*((__be16*)&cfg->cslen[0]));
     ccmd = cfg->aoeccmd & 0xf;
     len = sizeof *aoe;
 
@@ -1043,17 +1040,17 @@ static struct sk_buff* rcv_cfg(struct aoedev *d, struct aoethread *t, struct sk_
         case AOECCMD_PTEST:
             if (cslen > d->nconfig)
                 goto drop;
-            if (memcmp(cfg->data, d->config, cslen) != 0)
+            if (memcmp((cfg+1), d->config, cslen) != 0)
                 goto drop;
             // fall thru
         case AOECCMD_READ:
-            cfg->cslen = cpu_to_be16(d->nconfig);
-            memcpy(cfg->data, d->config, d->nconfig);
+            *((__be16*)&cfg->cslen[0]) = cpu_to_be16(d->nconfig);
+            memcpy((cfg+1), d->config, d->nconfig);
             len += sizeof *cfg + d->nconfig;
             break;
         case AOECCMD_SET:
             if (d->nconfig)
-                if (d->nconfig != cslen || memcmp(cfg->data, d->config, cslen) != 0) {
+                if (d->nconfig != cslen || memcmp((cfg+1), d->config, cslen) != 0) {
                     aoe->verfl |= AOEFL_ERR;
                     aoe->err = AOEERR_CFG;
                     break;
@@ -1061,7 +1058,7 @@ static struct sk_buff* rcv_cfg(struct aoedev *d, struct aoethread *t, struct sk_
             // fall thru
         case AOECCMD_FSET:
             d->nconfig = cslen;
-            memcpy(d->config, cfg->data, cslen);
+            memcpy(d->config, (cfg+1), cslen);
             len += sizeof *cfg + cslen;
             break;
         default:
@@ -1076,7 +1073,7 @@ drop:
 }
 
 static void ktannounce(struct aoethread* t) {
-    struct aoedev *d;
+    struct aoetarget *d;
     
     spin_lock(&root.lock);
     hlist_for_each_entry_rcu_notrace(d, &root.devlist, node)
@@ -1129,8 +1126,8 @@ static struct sk_buff* clone_response(struct aoethread* t, struct sk_buff *skb, 
 
 static void ktrcv(struct aoethread* t, struct sk_buff *skb, int cpu) {
     struct sk_buff *rskb = NULL;
-    struct aoedev *d;
-    struct aoedev_thread *dt;
+    struct aoetarget *d;
+    struct aoetarget_thread *dt;
     struct aoe_hdr* aoe;
     int major, minor;
     
@@ -1148,12 +1145,12 @@ static void ktrcv(struct aoethread* t, struct sk_buff *skb, int cpu) {
                     (skb->dev != d->netdev))
                 continue;
 
-            dt = (struct aoedev_thread*)per_cpu_ptr(d->devthread_percpu, cpu);
+            dt = (struct aoetarget_thread*)per_cpu_ptr(d->devthread_percpu, cpu);
             
             switch (aoe->cmd) {
                 case AOECMD_ATA:
                 {
-                    struct aoe_atahdr *ata = (struct aoe_atahdr *) aoe->data;
+                    struct aoe_atahdr *ata = (struct aoe_atahdr *)(aoe+1);
                     if (ata->cmdstat == ATA_CMD_PIO_WRITE ||
                         ata->cmdstat == ATA_CMD_PIO_WRITE_EXT)
                     {
@@ -1382,7 +1379,7 @@ static int __init kvblade_module_init(void) {
 }
 
 static __exit void kvblade_module_exit(void) {
-    struct aoedev *d, *nd;
+    struct aoetarget *d, *nd;
     struct aoethread* t;
     int n;
 
@@ -1390,13 +1387,13 @@ static __exit void kvblade_module_exit(void) {
     
     spin_lock(&root.lock);
     rcu_read_lock();
-    d = hlist_entry_safe(rcu_dereference_raw_notrace(hlist_first_rcu(&root.devlist)), aoedev_t, node);
+    d = hlist_entry_safe(rcu_dereference_raw_notrace(hlist_first_rcu(&root.devlist)), aoetarget_t, node);
     rcu_assign_pointer(hlist_first_rcu(&root.devlist), NULL);
     rcu_read_unlock();
     spin_unlock(&root.lock);
     
     for (; d; d = nd) {
-        nd = hlist_entry_safe(rcu_dereference_raw(hlist_next_rcu(&d->node)), aoedev_t, node);
+        nd = hlist_entry_safe(rcu_dereference_raw(hlist_next_rcu(&d->node)), aoetarget_t, node);
         while (count_busy(d)) {
             msleep(100);
         }
@@ -1429,4 +1426,5 @@ module_exit(kvblade_module_exit);
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Sam Hopkins <sah@coraid.com>");
+MODULE_AUTHOR("John Sharratt <johnathan.sharratt@gmail.com>");
 MODULE_DESCRIPTION("Virtual EtherDrive(R) Blade");
