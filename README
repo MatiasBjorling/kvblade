@@ -1,4 +1,4 @@
-kvblade: a 4.19+ linux kernel module
+kvblade: a 4.14 to 4.19+ linux kernel module
 
 * Standardized on the original Linux Kernel aoe.h header file
 * Removed all backwards compatibility with older kernels

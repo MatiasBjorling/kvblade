@@ -841,6 +841,7 @@ static void ata_io_complete(struct bio *bio) {
     
     cpu = get_cpu();
     t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, cpu);
+    rq->t = t;
     skb_queue_tail(&t->skb_com, skb);
     wake(t);
     put_cpu();
@@ -1000,7 +1001,7 @@ static struct sk_buff * rcv_ata(struct aoetarget *d, struct aoethread *t, struct
         break;
     case ATA_CMD_ID_ATA:
         len += ata_identify(d, ata);
-        break;
+        // fall-through
     case ATA_CMD_FLUSH:
         ata->cmdstat = ATA_DRDY;
         ata->errfeat = 0;
@@ -1342,20 +1343,23 @@ static struct packet_type pt = {
 
 static int __init kvblade_module_init(void) {
     struct aoethread* t;
-    int n;
-    int ret;
+    int n = 0, a;
+    int ret = 0;
 
     root.aoe_rq_cache = kmem_cache_create("aoe_rq_cache", sizeof (aoereq_t), sizeof (aoereq_t), SLAB_HWCACHE_ALIGN, NULL);
     if (root.aoe_rq_cache == NULL) return -ENOMEM;
     
     root.thread_percpu = (struct aoethread*)alloc_percpu(struct aoethread);
-    if (root.thread_percpu == NULL) return -ENOMEM;
+    if (root.thread_percpu == NULL) {
+        ret = -ENOMEM;
+        goto err1;
+    }
     
     INIT_HLIST_HEAD(&root.devlist);
     spin_lock_init(&root.lock);
     
     ret = kobject_init_and_add(&root.kvblade_kobj, &kvblade_ktype_ops, NULL, "kvblade");
-    if (ret) return -ENOMEM;
+    if (ret) goto err2;
 
     for (n = 0; n < num_online_cpus(); n++) {
         t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, n);
@@ -1365,7 +1369,8 @@ static int __init kvblade_module_init(void) {
 
         t->task = kthread_create(kthread, t, "kvblade(%d)", n);
         if (t->task == NULL || IS_ERR(t->task)) {
-            return -EAGAIN;
+            ret = -EAGAIN;
+            goto err3;
         }
         
         kthread_bind(t->task, n);        
@@ -1375,7 +1380,20 @@ static int __init kvblade_module_init(void) {
     }
 
     dev_add_pack(&pt);
-    return 0;
+    return ret;
+err3:
+    for (a = 0; a < n; a++) {
+        t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, n);
+        kthread_stop(t->task);
+        wait_for_completion(&t->ktrendez);
+    }
+    kobject_del(&root.kvblade_kobj);
+    kobject_put(&root.kvblade_kobj);
+err2:
+    free_percpu(root.thread_percpu);
+err1:
+    kmem_cache_destroy(root.aoe_rq_cache);
+    return ret;
 }
 
 static __exit void kvblade_module_exit(void) {
