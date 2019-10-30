@@ -16,10 +16,14 @@
 #include <linux/ata.h>
 #include <linux/ctype.h>
 #include <uapi/linux/hdreg.h>
+#include <linux/init.h>
+#include <linux/bio.h>
+#include <linux/device-mapper.h>
+
 //#include "if_aoe.h"
 #include "aoe.h"
 
-#define AOE_DEBUG
+//#define AOE_DEBUG
 
 #define xprintk(L, fmt, arg...) printk(L "kvblade: " "%s: " fmt, __func__, ## arg)
 #define iprintk(fmt, arg...) xprintk(KERN_INFO, fmt, ## arg)
@@ -35,7 +39,6 @@
 #define tiprintk(fmt, arg...) trace_printk(KERN_INFO fmt, ## arg)
 #define teprintk(fmt, arg...) trace_printk(KERN_ERR fmt, ## arg)
 #define wtprintk(fmt, arg...) trace_printk(KERN_WARN fmt, ## arg)
-#define 
 #endif
 
 #define nelem(A) (sizeof (A) / sizeof (A)[0])
@@ -43,16 +46,11 @@
 #define MAXSECTORS(mtu) (((mtu) - sizeof (struct aoe_hdr) - sizeof (struct aoe_atahdr)) / 512)
 #define MAXBUFFERS  1024
 #define MAXIOVECS 16
+#define MAX_AOE_HEADER sizeof(struct aoe_hdr) + sizeof(struct aoe_cfghdr)
 
-#if LINUX_VERSION_CODE <= KERNEL_VERSION(3,14,0)
-#define bio_sector(bio) ((bio)->bi_sector)
-#define bio_size(bio) ((bio)->bi_size)
-#define bio_idx(bio) ((bio)->bi_idx)
-#else
 #define bio_sector(bio) ((bio)->bi_iter.bi_sector)
 #define bio_size(bio) ((bio)->bi_iter.bi_size)
 #define bio_idx(bio) ((bio)->bi_iter.bi_idx)
-#endif
 
 #ifndef KERNEL_SECTOR_SIZE
 #define KERNEL_SECTOR_SIZE 512
@@ -182,8 +180,9 @@ static struct sk_buff * skb_new(struct aoethread* t, struct net_device *dev, ulo
 
     skb = __alloc_skb(len, GFP_ATOMIC, SKB_ALLOC_FCLONE, numa_node_id());
     if (!skb)
-        skb = __alloc_skb(len, GFP_ATOMIC & ~__GFP_DMA, SKB_ALLOC_FCLONE, numa_node_id());
+        skb = __alloc_skb(len, GFP_ATOMIC & ~__GFP_DMA, 0, NUMA_NO_NODE);
     if (skb) {
+        skb_reserve(skb, MAX_AOE_HEADER);
         skb_reset_network_header(skb);
         skb_reset_mac_header(skb);
         skb->dev = dev;
@@ -242,7 +241,7 @@ static void announce(struct aoedev *d, struct aoethread* t) {
     struct sk_buff* skb;
     struct aoe_hdr *aoe;
     struct aoe_cfghdr *cfg;
-    int len = sizeof(struct aoe_hdr) + sizeof(struct aoe_cfghdr) + d->nconfig;
+    int len = MAX_AOE_HEADER + d->nconfig;
     
     skb = skb_new(t, d->netdev, len);
     if (skb == NULL)
@@ -320,15 +319,13 @@ static ssize_t kvblade_add(u32 major, u32 minor, char *ifname, char *path) {
     hlist_for_each_entry_rcu_notrace(td, &root.devlist, node)
     {
         if (td->major == major &&
-                td->minor == minor &&
-                td->netdev == nd) {
-
+            td->minor == minor &&
+            td->netdev == nd)
+        {
             rcu_read_unlock();
             spin_unlock(&root.lock);
 
-            printk(KERN_ERR "kvblade: add failed: device %d.%d already exists on %s.\n",
-                    major, minor, ifname);
-
+            printk(KERN_ERR "kvblade: add failed: device %d.%d already exists on %s.\n", major, minor, ifname);
             ret = -EEXIST;
             goto err;
         }
@@ -339,7 +336,7 @@ static ssize_t kvblade_add(u32 major, u32 minor, char *ifname, char *path) {
     if (!d) {
         spin_unlock(&root.lock);
         
-        printk(KERN_ERR "kvblade: add failed: kmalloc error for %d.%d\n", major, minor);
+        dprintk(KERN_ERR "kvblade: add failed: kmalloc error for %d.%d\n", major, minor);
         ret = -ENOMEM;
         goto err;
     }
@@ -370,7 +367,14 @@ static ssize_t kvblade_add(u32 major, u32 minor, char *ifname, char *path) {
         memset(dt, 0, sizeof(struct aoedev_thread));
     }
 
-    kobject_init_and_add(&d->kobj, &kvblade_ktype, &root.kvblade_kobj, "%d.%d@%s", major, minor, ifname);
+    ret = kobject_init_and_add(&d->kobj, &kvblade_ktype, &root.kvblade_kobj, "%d.%d@%s", major, minor, ifname);
+    if (ret) {
+        spin_unlock(&root.lock);
+        kfree(d);
+        
+        printk(KERN_ERR "kvblade: add failed: kobject_init_and_add error for %d.%d\n", major, minor);
+        goto err;
+    }
 
     hlist_add_head_rcu(&d->node, &root.devlist);
     spin_unlock(&root.lock);
@@ -407,8 +411,8 @@ static ssize_t kvblade_readd(u32 major, u32 minor, char *ifname, char *path) {
     rcu_read_lock();
     hlist_for_each_entry_rcu_notrace(td, &root.devlist, node) {
         if (td->major == major &&
-                td->minor == minor &&
-                strcmp(td->netdev->name, ifname) == 0)
+            td->minor == minor &&
+            strcmp(td->netdev->name, ifname) == 0)
         {
             d = td;
             break;
@@ -443,10 +447,8 @@ out:
     return ret;
 }
 
-void kvblade_del_rcu(struct rcu_head* head)
-{
-    struct aoedev *d;
-    d = container_of(head, aoedev_t, rcu);
+void kvblade_del_rcu(struct rcu_head* head) {
+    struct aoedev *d = container_of(head, aoedev_t, rcu);
     
     blkdev_put(d->blkdev, FMODE_READ | FMODE_WRITE);
 
@@ -468,23 +470,23 @@ static ssize_t kvblade_del(u32 major, u32 minor, char *ifname) {
     rcu_read_lock();
     hlist_for_each_entry_rcu_notrace(d, &root.devlist, node) {
         if (d->major == major &&
-                d->minor == minor &&
-                strcmp(d->netdev->name, ifname) == 0)
+            d->minor == minor &&
+            strcmp(d->netdev->name, ifname) == 0)
+        {
             break;
+        }
     }
     
     if (d == NULL) {
         rcu_read_unlock();
         
-        printk(KERN_ERR "kvblade: del failed: device %d.%d@%s not found.\n",
-                major, minor, ifname);
+        printk(KERN_ERR "kvblade: del failed: device %d.%d@%s not found.\n", major, minor, ifname);
         ret = -ENOENT;
         goto err;
     } else if (count_busy(d)) {
         rcu_read_unlock();
         
-        printk(KERN_ERR "kvblade: del failed: device %d.%d@%s is busy.\n",
-                major, minor, ifname);
+        printk(KERN_ERR "kvblade: del failed: device %d.%d@%s is busy.\n", major, minor, ifname);
         ret = -EBUSY;
         goto err;
     }
@@ -512,10 +514,11 @@ static ssize_t store_add(struct aoedev *dev, const char *page, size_t len) {
     if (kvblade_sysfs_args(p, argv, nelem(argv)) != 4) {
         printk(KERN_ERR "kvblade: bad arg count for add\n");
         error = -EINVAL;
-    } else
+    } else {
         error = kvblade_add(simple_strtoul(argv[0], NULL, 0),
             simple_strtoul(argv[1], NULL, 0),
             argv[2], argv[3]);
+    }
 
     kfree(p);
     return error ? error : len;
@@ -535,10 +538,11 @@ static ssize_t store_del(struct aoedev *dev, const char *page, size_t len) {
     if (kvblade_sysfs_args(p, argv, nelem(argv)) != 3) {
         printk(KERN_ERR "kvblade: bad arg count for del\n");
         error = -EINVAL;
-    } else
+    } else {
         error = kvblade_del(simple_strtoul(argv[0], NULL, 0),
             simple_strtoul(argv[1], NULL, 0),
             argv[2]);
+    }
 
     kfree(p);
     return error ? error : len;
@@ -662,8 +666,9 @@ static ssize_t kvblade_attr_show(struct kobject *kobj, struct attribute *attr, c
     entry = container_of(attr, struct kvblade_sysfs_entry, attr);
     dev = container_of(kobj, struct aoedev, kobj);
 
-    if (!entry->show)
+    if (!entry->show) {
         return -EIO;
+    }
 
     return entry->show(dev, page);
 }
@@ -675,9 +680,9 @@ static ssize_t kvblade_attr_store(struct kobject *kobj, struct attribute *attr,
 
     entry = container_of(attr, struct kvblade_sysfs_entry, attr);
 
-    if (kobj == &root.kvblade_kobj)
+    if (kobj == &root.kvblade_kobj) {
         ret = entry->store(NULL, page, length);
-    else {
+    } else {
         struct aoedev *dev = container_of(kobj, struct aoedev, kobj);
 
         if (!entry->store)
@@ -825,7 +830,6 @@ static void ata_io_complete(struct bio *bio) {
 
     struct aoethread *t;
     struct aoedev* d;
-    struct aoedev_thread* dt;
     struct aoereq *rq, **prq;
     struct sk_buff *skb;
     int cpu;
@@ -840,19 +844,8 @@ static void ata_io_complete(struct bio *bio) {
     
     cpu = get_cpu();
     t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, cpu);
-    if (rq->t != t) {
-        dt = (struct aoedev_thread*)per_cpu_ptr(d->devthread_percpu, cpu);
-        atomic_inc(&dt->busy);
-        dt = (struct aoedev_thread*)per_cpu_ptr(d->devthread_percpu, rq->t->cpu);   // this can cause a cache line fetch
-        atomic_dec(&dt->busy);
-    }
-    rq->t = t;
-    if (in_interrupt()) {
-        skb_queue_tail(&t->skb_com, skb);
-        wake(t);
-    } else {
-        ktcom(t, skb);
-    }
+    skb_queue_tail(&t->skb_com, skb);
+    wake(t);
     put_cpu();
 }
 
@@ -867,8 +860,7 @@ static inline loff_t readlba(u8 *lba) {
     return n;
 }
 
-static struct bio* rq_init_bio(struct aoereq *rq)
-{
+static struct bio* rq_init_bio(struct aoereq *rq) {
     struct bio *bio;
     bio = &rq->bio;
     bio_init(bio, bio->bi_inline_vecs, MAXIOVECS);
@@ -891,12 +883,12 @@ static int skb_add_pages(struct sk_buff* skb, struct bio *bio, int len) {
     // Create the source scatterlist from the received packet
     sg_init_table(sg_tbl, sg_max);
     sg_n = skb_to_sgvec(skb, sg_tbl, offset, len);
-    if (sg_n <= 0)
+    if (sg_n <= 0) {
         return 0;
+    }
 
     // Loop through all the scatterlist items and add them into the BIO
-    for_each_sg(sg_tbl, sgentry, sg_n, sg_i)
-    {
+    for_each_sg(sg_tbl, sgentry, sg_n, sg_i) {
         if (bio_add_page(bio,
                          sg_page(sgentry),
                          sgentry->length,
@@ -926,16 +918,16 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
     switch (ata->cmdstat) {
         do {
             case ATA_CMD_PIO_READ:
-            lba &= ATA_LBA28MAX;
+                lba &= ATA_LBA28MAX;
             case ATA_CMD_PIO_READ_EXT:
-            lba &= 0x0000FFFFFFFFFFFFULL;
-            rw = READ;
-            break;
+                lba &= 0x0000FFFFFFFFFFFFULL;
+                rw = READ;
+                break;
             case ATA_CMD_PIO_WRITE:
-            lba &= ATA_LBA28MAX;
+                lba &= ATA_LBA28MAX;
             case ATA_CMD_PIO_WRITE_EXT:
-            lba &= 0x0000FFFFFFFFFFFFULL;
-            rw = WRITE;
+                lba &= 0x0000FFFFFFFFFFFFULL;
+                rw = WRITE;
         } while (0);
         
         // Default to error unless it is succesful
@@ -996,10 +988,11 @@ static struct sk_buff * rcv_ata(struct aoedev *d, struct aoethread *t, struct sk
         atomic_inc(&dt->busy);
         put_cpu();
 
-        if (rw == WRITE)
+        if (rw == WRITE) {
             bio_set_op_attrs(bio, REQ_OP_WRITE, 0);
-        else
+        } else {
             bio_set_op_attrs(bio, REQ_OP_READ, 0);
+        }
         submit_bio(bio);
         return NULL;
 
@@ -1225,12 +1218,12 @@ static int rcv(struct sk_buff *skb, struct net_device *ndev, struct packet_type 
     struct aoethread* t;
     
     skb = skb_share_check(skb, GFP_ATOMIC);
-    if (skb == NULL)
+    if (skb == NULL) {
         return -ENOMEM;
+    }
     
     skb_push(skb, ETH_HLEN);
-    if (unlikely(!pskb_may_pull(skb, sizeof(struct aoe_hdr) + sizeof(struct aoe_atahdr))))
-    {
+    if (unlikely(!pskb_may_pull(skb, sizeof(struct aoe_hdr) + sizeof(struct aoe_atahdr)))) {
         dev_kfree_skb(skb);
         return 0;
     }
@@ -1276,6 +1269,7 @@ static int kthread(void* data) {
     
     sigset_t blocked;
     int work;
+    int cpu;
     
     skb_queue_head_init(&t->skb_outq);
     skb_queue_head_init(&t->skb_inq);
@@ -1295,7 +1289,9 @@ static int kthread(void* data) {
     do {
         // When we are woken, the most important thing is to get straight
         // into working (this is on the critical latency path)
-        work = kthread_work(t);
+        cpu = get_cpu();
+        work = kthread_work(t, cpu);
+        put_cpu();
         
         // Enter a loop that processes work continuous until no work
         // is found up after a complete schedule
@@ -1307,7 +1303,7 @@ static int kthread(void* data) {
             
             // Now check for more work
             // (if none is found then we'll go into sleep mode)
-            int cpu = get_cpu();
+            cpu = get_cpu();
             work = kthread_work(t, cpu);
             put_cpu();
         }
@@ -1315,7 +1311,7 @@ static int kthread(void* data) {
         // We have to process work after setting INTERRUPTIBLE or we risk missing a
         // wake up in between
         set_current_state(TASK_INTERRUPTIBLE);
-        int cpu = get_cpu();
+        cpu = get_cpu();
         work = kthread_work(t, cpu);
         put_cpu();
         
@@ -1350,6 +1346,7 @@ static struct packet_type pt = {
 static int __init kvblade_module_init(void) {
     struct aoethread* t;
     int n;
+    int ret;
 
     root.aoe_rq_cache = kmem_cache_create("aoe_rq_cache", sizeof (aoereq_t), sizeof (aoereq_t), SLAB_HWCACHE_ALIGN, NULL);
     if (root.aoe_rq_cache == NULL) return -ENOMEM;
@@ -1360,7 +1357,8 @@ static int __init kvblade_module_init(void) {
     INIT_HLIST_HEAD(&root.devlist);
     spin_lock_init(&root.lock);
     
-    kobject_init_and_add(&root.kvblade_kobj, &kvblade_ktype_ops, NULL, "kvblade");
+    ret = kobject_init_and_add(&root.kvblade_kobj, &kvblade_ktype_ops, NULL, "kvblade");
+    if (ret) return -ENOMEM;
 
     for (n = 0; n < num_online_cpus(); n++) {
         t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, n);
@@ -1368,10 +1366,10 @@ static int __init kvblade_module_init(void) {
         memset(t, 0, sizeof(aoethread_t));
         init_completion(&t->ktrendez);
 
-        //t->task = kthread_create_on_cpu(kthread, t, n, "kvblade(%d)", n);
         t->task = kthread_create(kthread, t, "kvblade(%d)", n);
-        if (t->task == NULL || IS_ERR(t->task))
+        if (t->task == NULL || IS_ERR(t->task)) {
             return -EAGAIN;
+        }
         
         kthread_bind(t->task, n);        
         wake_up_process(t->task);    
@@ -1399,14 +1397,14 @@ static __exit void kvblade_module_exit(void) {
     
     for (; d; d = nd) {
         nd = hlist_entry_safe(rcu_dereference_raw(hlist_next_rcu(&d->node)), aoedev_t, node);
-        while (count_busy(d))
+        while (count_busy(d)) {
             msleep(100);
+        }
         
         call_rcu(&d->rcu, kvblade_del_rcu);
     }
     
-    for (n = 0; n < num_online_cpus(); n++)
-    {
+    for (n = 0; n < num_online_cpus(); n++) {
         t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, n);
         kthread_stop(t->task);
         wait_for_completion(&t->ktrendez);
