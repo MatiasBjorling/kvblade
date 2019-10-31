@@ -11,7 +11,7 @@
 
 #include "aoe.h"
 
-#define AOE_DEBUG
+//#define AOE_DEBUG
 //#define AOE_DEBUG_VERBOSE
 
 #define xprintk(L, fmt, arg...) printk(L "kvblade: " "%s: " fmt, __func__, ## arg)
