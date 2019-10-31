@@ -12,6 +12,7 @@
 #include "aoe.h"
 
 #define AOE_DEBUG
+//#define AOE_DEBUG_VERBOSE
 
 #define xprintk(L, fmt, arg...) printk(L "kvblade: " "%s: " fmt, __func__, ## arg)
 #define iprintk(fmt, arg...) xprintk(KERN_INFO, fmt, ## arg)
@@ -268,7 +269,9 @@ static void announce(struct aoetarget *d, struct aoethread* t) {
         memcpy((cfg+1), d->config, d->nconfig);
     }
     
+#ifdef AOE_DEBUG_VERBOSE
     tiprintk("kvblade: sending announce for %04X.%02X\n", aoe->major, aoe->minor);    
+#endif
     skb_queue_tail(&t->skb_outq, skb);
     wake(t);
 }
@@ -1000,11 +1003,15 @@ static struct sk_buff * rcv_ata(struct aoetarget *d, struct aoethread *t, struct
         ata->errfeat = ATA_ABORTED;
         break;
     case ATA_CMD_ID_ATA:
+#ifdef AOE_DEBUG_VERBOSE
         tiprintk("kvblade: received ATA_CMD_ID_ATA for %04X.%02X\n", aoe->major, aoe->minor);
+#endif
         len += ata_identify(d, ata);
         // fall-through
     case ATA_CMD_FLUSH:
+#ifdef AOE_DEBUG_VERBOSE
         tiprintk("kvblade: received ATA_CMD_FLUSH for %04X.%02X\n", aoe->major, aoe->minor);
+#endif
         ata->cmdstat = ATA_DRDY;
         ata->errfeat = 0;
         break;
@@ -1262,7 +1269,9 @@ static int kthread_work(struct aoethread* t, int cpu) {
     } while (iskb || cskb || oskb);
     
     if (atomic_xchg(&t->announce_all, 0) > 0) {
+#ifdef AOE_DEBUG_VERBOSE
         tiprintk("kvblade: kvblade announce on cpu(%d)\n", smp_processor_id());
+#endif
         ktannounce(t);
         ret = 1;
     }
