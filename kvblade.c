@@ -12,6 +12,7 @@
 #include "aoe.h"
 
 //#define AOE_DEBUG
+//#define AOE_DEBUG_VERBOSE
 
 #define xprintk(L, fmt, arg...) printk(L "kvblade: " "%s: " fmt, __func__, ## arg)
 #define iprintk(fmt, arg...) xprintk(KERN_INFO, fmt, ## arg)
@@ -158,7 +159,7 @@ static ssize_t kvblade_sysfs_args(char *p, char *argv[], int argv_max) {
         if (argc < argv_max)
             argv[argc++] = p;
         else {
-            printk(KERN_ERR "kvblade: too many args!\n");
+            teprintk("kvblade: too many args!\n");
             return -1;
         }
         while (*p && !isspace(*p))
@@ -268,6 +269,9 @@ static void announce(struct aoetarget *d, struct aoethread* t) {
         memcpy((cfg+1), d->config, d->nconfig);
     }
     
+#ifdef AOE_DEBUG_VERBOSE
+    tiprintk("kvblade: sending announce for %04X.%02X\n", aoe->major, aoe->minor);    
+#endif
     skb_queue_tail(&t->skb_outq, skb);
     wake(t);
 }
@@ -282,7 +286,7 @@ static ssize_t kvblade_add(u32 major, u32 minor, char *ifname, char *path) {
     int n;
     struct aoetarget_thread* dt;
     
-    printk("kvblade: kvblade_add\n");
+    tiprintk("kvblade: kvblade_add %04X.%02X\n", major, minor);
     nd = dev_get_by_name(&init_net, ifname);
     if (nd == NULL) {
         rcu_read_lock();
@@ -292,7 +296,7 @@ static ssize_t kvblade_add(u32 major, u32 minor, char *ifname, char *path) {
         }
         rcu_read_unlock();
         if (nd == NULL) {
-            eprintk("kvblade: add failed: interface %s not found.\n", ifname);
+            teprintk("kvblade: add failed: interface %s not found.\n", ifname);
             return -ENOENT;
         }
     }
@@ -300,12 +304,12 @@ static ssize_t kvblade_add(u32 major, u32 minor, char *ifname, char *path) {
 
     bd = blkdev_get_by_path(path, FMODE_READ | FMODE_WRITE, NULL);
     if (!bd || IS_ERR(bd)) {
-        printk(KERN_ERR "kvblade: add failed: can't open block device %s: %ld\n", path, PTR_ERR(bd));
+        teprintk("kvblade: add failed: can't open block device %s: %ld\n", path, PTR_ERR(bd));
         return -ENOENT;
     }
 
     if (kvblade_get_capacity(bd) == 0) {
-        printk(KERN_ERR "kvblade: add failed: zero sized block device.\n");
+        teprintk("kvblade: add failed: zero sized block device.\n");
         ret = -ENOENT;
         goto err;
     }
@@ -322,7 +326,7 @@ static ssize_t kvblade_add(u32 major, u32 minor, char *ifname, char *path) {
             rcu_read_unlock();
             spin_unlock(&root.lock);
 
-            printk(KERN_ERR "kvblade: add failed: device %d.%d already exists on %s.\n", major, minor, ifname);
+            teprintk("kvblade: add failed: device %d.%d already exists on %s.\n", major, minor, ifname);
             ret = -EEXIST;
             goto err;
         }
@@ -333,7 +337,7 @@ static ssize_t kvblade_add(u32 major, u32 minor, char *ifname, char *path) {
     if (!d) {
         spin_unlock(&root.lock);
         
-        dprintk(KERN_ERR "kvblade: add failed: kmalloc error for %d.%d\n", major, minor);
+        teprintk("kvblade: add failed: kmalloc error for %d.%d\n", major, minor);
         ret = -ENOMEM;
         goto err;
     }
@@ -354,7 +358,7 @@ static ssize_t kvblade_add(u32 major, u32 minor, char *ifname, char *path) {
         spin_unlock(&root.lock);
         kfree(d);
         
-        printk(KERN_ERR "kvblade: add failed: alloc_percpu error for %d.%d\n", major, minor);
+        teprintk("kvblade: add failed: alloc_percpu error for %d.%d\n", major, minor);
         ret = -ENOMEM;
         goto err;
     }
@@ -369,15 +373,14 @@ static ssize_t kvblade_add(u32 major, u32 minor, char *ifname, char *path) {
         spin_unlock(&root.lock);
         kfree(d);
         
-        printk(KERN_ERR "kvblade: add failed: kobject_init_and_add error for %d.%d\n", major, minor);
+        teprintk("kvblade: add failed: kobject_init_and_add error for %d.%d\n", major, minor);
         goto err;
     }
 
     hlist_add_head_rcu(&d->node, &root.devlist);
     spin_unlock(&root.lock);
 
-    dprintk("kvblade: added %s as %d.%d@%s: %Lu sectors.\n",
-            path, major, minor, ifname, d->scnt);
+    tiprintk("kvblade: added %s as %d.%d@%s: %Lu sectors.\n", path, major, minor, ifname, d->scnt);
 
     t = (struct aoethread*)per_cpu_ptr(root.thread_percpu, get_cpu());
     atomic_set(&t->announce_all, 1);
@@ -398,7 +401,7 @@ static ssize_t kvblade_readd(u32 major, u32 minor, char *ifname, char *path) {
     
     bd = blkdev_get_by_path(path, FMODE_READ | FMODE_WRITE, NULL);
     if (!bd || IS_ERR(bd)) {
-        printk(KERN_ERR "kvblade: readd failed: can't open block device %s: %ld\n", path, PTR_ERR(bd));
+        teprintk("kvblade: readd failed: can't open block device %s: %ld\n", path, PTR_ERR(bd));
         return -ENOENT;
     }
     
@@ -477,13 +480,13 @@ static ssize_t kvblade_del(u32 major, u32 minor, char *ifname) {
     if (d == NULL) {
         rcu_read_unlock();
         
-        printk(KERN_ERR "kvblade: del failed: device %d.%d@%s not found.\n", major, minor, ifname);
+        teprintk("kvblade: del failed: device %d.%d@%s not found.\n", major, minor, ifname);
         ret = -ENOENT;
         goto err;
     } else if (count_busy(d)) {
         rcu_read_unlock();
         
-        printk(KERN_ERR "kvblade: del failed: device %d.%d@%s is busy.\n", major, minor, ifname);
+        teprintk("kvblade: del failed: device %d.%d@%s is busy.\n", major, minor, ifname);
         ret = -EBUSY;
         goto err;
     }
@@ -509,7 +512,7 @@ static ssize_t store_add(struct aoetarget *dev, const char *page, size_t len) {
     p[len] = '\0';
 
     if (kvblade_sysfs_args(p, argv, nelem(argv)) != 4) {
-        printk(KERN_ERR "kvblade: bad arg count for add\n");
+        teprintk("kvblade: bad arg count for add\n");
         error = -EINVAL;
     } else {
         error = kvblade_add(simple_strtoul(argv[0], NULL, 0),
@@ -533,7 +536,7 @@ static ssize_t store_del(struct aoetarget *dev, const char *page, size_t len) {
     p[len] = '\0';
 
     if (kvblade_sysfs_args(p, argv, nelem(argv)) != 3) {
-        printk(KERN_ERR "kvblade: bad arg count for del\n");
+        teprintk("kvblade: bad arg count for del\n");
         error = -EINVAL;
     } else {
         error = kvblade_del(simple_strtoul(argv[0], NULL, 0),
@@ -557,7 +560,7 @@ static ssize_t store_readd(struct aoetarget *dev, const char *page, size_t len) 
     p[len] = '\0';
 
     if (kvblade_sysfs_args(p, argv, nelem(argv)) != 4) {
-        printk(KERN_ERR "kvblade: bad arg count for readd\n");
+        teprintk("kvblade: bad arg count for readd\n");
         error = -EINVAL;
     } else {
         error = kvblade_readd(simple_strtoul(argv[0], NULL, 0),
@@ -793,7 +796,7 @@ static void ktcom(struct aoethread* t, struct sk_buff *skb) {
     len = sizeof *aoe + sizeof *ata;
     
     if (!bio->bi_status) {
-        bytes = ata->scnt << 9;        
+        bytes = ata->scnt * KERNEL_SECTOR_SIZE;        
         if (bio_data_dir(bio) == READ)
             len += bytes;
         
@@ -802,7 +805,7 @@ static void ktcom(struct aoethread* t, struct sk_buff *skb) {
         ata->errfeat = 0;
         // should increment lba here, too
     } else {
-        printk(KERN_ERR "kvblade: I/O error %d on %s (status=%d)\n", blk_status_to_errno(bio->bi_status), d->kobj.name, bio->bi_status);
+        teprintk("kvblade: I/O error %d on %s (status=%d)\n", blk_status_to_errno(bio->bi_status), d->kobj.name, bio->bi_status);
         ata->cmdstat = ATA_ERR | ATA_DF;
         ata->errfeat = ATA_UNC | ATA_ABORTED;
     }
@@ -911,7 +914,7 @@ static struct sk_buff * rcv_ata(struct aoetarget *d, struct aoethread *t, struct
     ata = (struct aoe_atahdr *)(aoe+1);
     lba = readlba(&ata->lba0);
     len = sizeof *aoe + sizeof *ata;
-    data_len = ata->scnt << 9;
+    data_len = ata->scnt * KERNEL_SECTOR_SIZE;
     
     switch (ata->cmdstat) {
         do {
@@ -1000,14 +1003,20 @@ static struct sk_buff * rcv_ata(struct aoetarget *d, struct aoethread *t, struct
         ata->errfeat = ATA_ABORTED;
         break;
     case ATA_CMD_ID_ATA:
+#ifdef AOE_DEBUG_VERBOSE
+        tiprintk("kvblade: received ATA_CMD_ID_ATA for %04X.%02X\n", aoe->major, aoe->minor);
+#endif
         len += ata_identify(d, ata);
         // fall-through
     case ATA_CMD_FLUSH:
+#ifdef AOE_DEBUG_VERBOSE
+        tiprintk("kvblade: received ATA_CMD_FLUSH for %04X.%02X\n", aoe->major, aoe->minor);
+#endif
         ata->cmdstat = ATA_DRDY;
         ata->errfeat = 0;
         break;
     }
-    
+    skb_trim(skb, len);
     return skb;
 drop:
     dev_kfree_skb(skb);
@@ -1035,21 +1044,25 @@ static struct sk_buff* rcv_cfg(struct aoetarget *d, struct aoethread *t, struct 
 
     switch (ccmd) {
         case AOECCMD_TEST:
+            tiprintk("kvblade: received AOECCMD_TEST for %04X.%02X\n", aoe->major, aoe->minor);
             if (d->nconfig != cslen)
                 goto drop;
             // fall thru
         case AOECCMD_PTEST:
+            tiprintk("kvblade: received AOECCMD_PTEST for %04X.%02X\n", aoe->major, aoe->minor);
             if (cslen > d->nconfig)
                 goto drop;
             if (memcmp((cfg+1), d->config, cslen) != 0)
                 goto drop;
             // fall thru
         case AOECCMD_READ:
+            tiprintk("kvblade: received AOECCMD_READ for %04X.%02X\n", aoe->major, aoe->minor);
             *((__be16*)&cfg->cslen[0]) = cpu_to_be16(d->nconfig);
             memcpy((cfg+1), d->config, d->nconfig);
             len += sizeof *cfg + d->nconfig;
             break;
         case AOECCMD_SET:
+            tiprintk("kvblade: received AOECCMD_SET for %04X.%02X\n", aoe->major, aoe->minor);
             if (d->nconfig)
                 if (d->nconfig != cslen || memcmp((cfg+1), d->config, cslen) != 0) {
                     aoe->verfl |= AOEFL_ERR;
@@ -1058,11 +1071,13 @@ static struct sk_buff* rcv_cfg(struct aoetarget *d, struct aoethread *t, struct 
                 }
             // fall thru
         case AOECCMD_FSET:
+            tiprintk("kvblade: received AOECCMD_FSET for %04X.%02X\n", aoe->major, aoe->minor);
             d->nconfig = cslen;
             memcpy(d->config, (cfg+1), cslen);
             len += sizeof *cfg + cslen;
             break;
         default:
+            teprintk("kvblade: unknown ATA CFG command 0x%02X for %04X.%02X\n", ccmd, aoe->major, aoe->minor);
             aoe->verfl |= AOEFL_ERR;
             aoe->err = AOEERR_ARG;
     }
@@ -1078,7 +1093,7 @@ static void ktannounce(struct aoethread* t) {
     
     spin_lock(&root.lock);
     hlist_for_each_entry_rcu_notrace(d, &root.devlist, node)
-    {        
+    {
         announce(d, t);
     }
     spin_unlock(&root.lock);    
@@ -1254,7 +1269,9 @@ static int kthread_work(struct aoethread* t, int cpu) {
     } while (iskb || cskb || oskb);
     
     if (atomic_xchg(&t->announce_all, 0) > 0) {
-        //printk(KERN_INFO "kvblade: kvblade announce on cpu(%d)\n", smp_processor_id());
+#ifdef AOE_DEBUG_VERBOSE
+        tiprintk("kvblade: kvblade announce on cpu(%d)\n", smp_processor_id());
+#endif
         ktannounce(t);
         ret = 1;
     }
@@ -1282,7 +1299,7 @@ static int kthread(void* data) {
     flush_signals(current);
     complete(&t->ktrendez);
     
-    printk(KERN_INFO "kvblade: started a new kvblade thread (%d)\n", smp_processor_id());
+    tiprintk("kvblade: started a new kvblade thread (%d)\n", smp_processor_id());
     
     do {
         // When we are woken, the most important thing is to get straight
@@ -1328,7 +1345,7 @@ static int kthread(void* data) {
     skb_queue_purge(&t->skb_inq);
     skb_queue_purge(&t->skb_com);
     
-    printk(KERN_INFO "kvblade: stopped a kvblade thread (%d)\n", smp_processor_id());
+    tiprintk("kvblade: stopped a kvblade thread (%d)\n", smp_processor_id());
     
     __set_current_state(TASK_RUNNING);
     complete(&t->ktrendez);
