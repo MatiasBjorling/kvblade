@@ -101,9 +101,8 @@ struct aoetarget {
     
     char                    model[ATA_MODEL_LEN];
     char                    sn[ATA_ID_SERNO_LEN];
-    
-    struct rcu_head         rcu; // List head used to delay the release of this object till after RCU sync
-    
+
+  struct rcu_work           rcu; // rcu work used to delay the release of this object till after RCU sync
 } ____cacheline_aligned_in_smp typedef aoetarget_t;
 
 struct kvblade_sysfs_entry {
@@ -447,8 +446,8 @@ out:
     return ret;
 }
 
-void kvblade_del_rcu(struct rcu_head* head) {
-    struct aoetarget *d = container_of(head, aoetarget_t, rcu);
+void kvblade_del_rcu(struct work_struct *work) {
+    struct aoetarget *d = container_of(to_rcu_work(work), aoetarget_t, rcu);
     
     blkdev_put(d->blkdev, FMODE_READ | FMODE_WRITE);
 
@@ -495,7 +494,8 @@ static ssize_t kvblade_del(u32 major, u32 minor, char *ifname) {
     
     spin_unlock(&root.lock);
 
-    call_rcu(&d->rcu, kvblade_del_rcu);
+    INIT_RCU_WORK(&d->rcu, kvblade_del_rcu);
+    queue_rcu_work(system_wq, &d->rcu);
     return 0;
 err:
     spin_unlock(&root.lock);
@@ -1422,7 +1422,7 @@ static __exit void kvblade_module_exit(void) {
     
     spin_lock(&root.lock);
     rcu_read_lock();
-    d = hlist_entry_safe(rcu_dereference_raw_notrace(hlist_first_rcu(&root.devlist)), aoetarget_t, node);
+    d = hlist_entry_safe(rcu_dereference_raw(hlist_first_rcu(&root.devlist)), aoetarget_t, node);
     rcu_assign_pointer(hlist_first_rcu(&root.devlist), NULL);
     rcu_read_unlock();
     spin_unlock(&root.lock);
@@ -1432,8 +1432,9 @@ static __exit void kvblade_module_exit(void) {
         while (count_busy(d)) {
             msleep(100);
         }
-        
-        call_rcu(&d->rcu, kvblade_del_rcu);
+
+	INIT_RCU_WORK(&d->rcu, kvblade_del_rcu);
+	queue_rcu_work(system_wq, &d->rcu);
     }
     
     for (n = 0; n < num_online_cpus(); n++) {
